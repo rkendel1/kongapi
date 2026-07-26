@@ -36,4 +36,4 @@ cargo test
 
 ## Plugin migration guidance
 
-Use `/home/runner/work/kongapi/kongapi/gateway-core-rust/docs/LUA_TO_RUST_WASM_PLUGIN_MIGRATION.md` as the migration checklist for moving Lua plugins to native Rust or sandboxed Wasm plugins.
+Use `docs/LUA_TO_RUST_WASM_PLUGIN_MIGRATION.md` as the migration checklist for moving Lua plugins to native Rust or sandboxed Wasm plugins.

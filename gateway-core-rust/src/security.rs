@@ -336,7 +336,11 @@ fn decode_token_claims(
     .map(|decoded| decoded.claims)
 }
 
-fn extract_claim_values(claims: &serde_json::Value, claim_name: &str, include_legacy_role: bool) -> Vec<String> {
+fn extract_claim_values(
+    claims: &serde_json::Value,
+    claim_name: &str,
+    include_legacy_role_claim: bool,
+) -> Vec<String> {
     let mut values = vec![];
     if let Some(value) = claims.get(claim_name) {
         if let Some(arr) = value.as_array() {
@@ -350,7 +354,7 @@ fn extract_claim_values(claims: &serde_json::Value, claim_name: &str, include_le
         }
     }
 
-    if include_legacy_role {
+    if include_legacy_role_claim {
         if let Some(single_role) = claims.get("role").and_then(|v| v.as_str()) {
             values.push(single_role.to_string());
         }

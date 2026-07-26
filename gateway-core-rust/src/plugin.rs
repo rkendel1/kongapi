@@ -235,7 +235,9 @@ impl PluginManager {
 
     fn rollback_lifecycle(&mut self) {
         for plugin in &mut self.plugins {
-            let _ = plugin.teardown();
+            if let Err(err) = plugin.teardown() {
+                tracing::warn!(plugin = plugin.name(), error = %err, "plugin teardown failed during rollback");
+            }
         }
         self.plugins.clear();
     }

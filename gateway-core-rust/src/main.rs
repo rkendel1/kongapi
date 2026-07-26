@@ -403,46 +403,15 @@ async fn proxy_handler(
             }
         }
 
+        if let Some(blocked_response) = run_response_plugin_phases(&state, &plugin_context) {
+            return blocked_response;
+        }
+
         if let Some(replacement_body) = response_body_replace {
-            let header_filter_result = state.plugins.run_phase(WasmPhase::HeaderFilter, &plugin_context);
-            if !header_filter_result.allowed {
-                return (
-                    StatusCode::FORBIDDEN,
-                    header_filter_result.reason.unwrap_or_else(|| "blocked by header phase plugin".to_string()),
-                )
-                    .into_response();
-            }
-            let body_filter_result = state.plugins.run_phase(WasmPhase::BodyFilter, &plugin_context);
-            if !body_filter_result.allowed {
-                return (
-                    StatusCode::FORBIDDEN,
-                    body_filter_result.reason.unwrap_or_else(|| "blocked by body phase plugin".to_string()),
-                )
-                    .into_response();
-            }
-            let _ = state.plugins.run_phase(WasmPhase::Log, &plugin_context);
             return response_builder
                 .body(Body::from(replacement_body))
                 .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to build response").into_response());
         }
-
-        let header_filter_result = state.plugins.run_phase(WasmPhase::HeaderFilter, &plugin_context);
-        if !header_filter_result.allowed {
-            return (
-                StatusCode::FORBIDDEN,
-                header_filter_result.reason.unwrap_or_else(|| "blocked by header phase plugin".to_string()),
-            )
-                .into_response();
-        }
-        let body_filter_result = state.plugins.run_phase(WasmPhase::BodyFilter, &plugin_context);
-        if !body_filter_result.allowed {
-            return (
-                StatusCode::FORBIDDEN,
-                body_filter_result.reason.unwrap_or_else(|| "blocked by body phase plugin".to_string()),
-            )
-                .into_response();
-        }
-        let _ = state.plugins.run_phase(WasmPhase::Log, &plugin_context);
 
         let response_stream = upstream_response.bytes_stream();
         return response_builder
@@ -528,6 +497,37 @@ fn select_upstream_name(route: &Route, headers: &HeaderMap, client_key: &str, re
     } else {
         route.upstream.clone()
     }
+}
+
+fn run_response_plugin_phases(state: &AppState, plugin_context: &PluginContext) -> Option<Response> {
+    let header_filter_result = state.plugins.run_phase(WasmPhase::HeaderFilter, plugin_context);
+    if !header_filter_result.allowed {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                header_filter_result
+                    .reason
+                    .unwrap_or_else(|| "blocked by header phase plugin".to_string()),
+            )
+                .into_response(),
+        );
+    }
+
+    let body_filter_result = state.plugins.run_phase(WasmPhase::BodyFilter, plugin_context);
+    if !body_filter_result.allowed {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                body_filter_result
+                    .reason
+                    .unwrap_or_else(|| "blocked by body phase plugin".to_string()),
+            )
+                .into_response(),
+        );
+    }
+
+    let _ = state.plugins.run_phase(WasmPhase::Log, plugin_context);
+    None
 }
 
 fn deterministic_percentage_bucket(route_name: &str, client_key: &str, request_count: usize) -> u64 {
