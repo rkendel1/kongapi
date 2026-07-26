@@ -308,6 +308,32 @@ pub struct PluginConfig {
     pub module: String,
     #[serde(default)]
     pub wasm_path: Option<String>,
+    #[serde(default = "default_plugin_runtime")]
+    pub runtime: String,
+    #[serde(default = "default_plugin_contract_version")]
+    pub contract_version: u32,
+    #[serde(default = "default_plugin_phases")]
+    pub phases: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+fn default_plugin_runtime() -> String {
+    "native".to_string()
+}
+
+fn default_plugin_contract_version() -> u32 {
+    1
+}
+
+fn default_plugin_phases() -> Vec<String> {
+    vec![
+        "init".to_string(),
+        "access".to_string(),
+        "header_filter".to_string(),
+        "body_filter".to_string(),
+        "log".to_string(),
+    ]
 }
 
 impl GatewayConfig {

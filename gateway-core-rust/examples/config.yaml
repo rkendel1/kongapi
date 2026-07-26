@@ -125,4 +125,8 @@ rate_limit:
 plugins:
   - name: jwt_auth
     module: plugins.jwt_auth
+    runtime: wasm
+    contract_version: 1
+    phases: [access, log]
+    capabilities: [read_headers, emit_logs]
     wasm_path: examples/plugins/jwt_auth/jwt_auth.wasm

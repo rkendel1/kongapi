@@ -119,8 +119,8 @@ impl RateLimiter {
 
     pub fn check(&self, key: &str) -> bool {
         let ctx = RateLimitContext {
-            route: "legacy-route",
-            service: "legacy-service",
+            route: "default-route",
+            service: "default-service",
             consumer: None,
             client: key,
         };

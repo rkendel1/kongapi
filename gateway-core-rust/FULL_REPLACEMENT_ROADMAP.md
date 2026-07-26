@@ -45,7 +45,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add canary and weighted traffic splitting primitives.
 - Add advanced fault-injection controls for resilience testing.
 
-## PR6 — Plugin runtime parity (native + Wasm)
+## PR6 (completed) — Plugin runtime parity (native + Wasm)
 - Finalize stable Rust plugin trait contracts with versioning.
 - Implement Wasm runtime host with sandboxed capability model.
 - Add plugin phase ordering parity (init/access/header/body/log).

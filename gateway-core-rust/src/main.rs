@@ -36,6 +36,7 @@ use rate_limit::{RateLimitContext, RateLimiter};
 use resilience::{should_retry_method, should_retry_status, target_key, RuntimeRegistry};
 use router::{FaultInjectionConfig, Protocol, RequestTransform, ResponseTransform, Route};
 use security::AuthContext;
+use wasm_abi::WasmPhase;
 
 #[derive(Clone)]
 struct AppState {
@@ -233,10 +234,11 @@ async fn proxy_handler(
         None => return (StatusCode::NOT_FOUND, "no matching route").into_response(),
     };
 
-    let plugin_result = state.plugins.run(&PluginContext {
+    let plugin_context = PluginContext {
         route: route.name.clone(),
         path: path.to_string(),
-    });
+    };
+    let plugin_result = state.plugins.run_phase(WasmPhase::Access, &plugin_context);
 
     if !plugin_result.allowed {
         state.metrics.inc_unauthorized();
@@ -399,10 +401,45 @@ async fn proxy_handler(
         }
 
         if let Some(replacement_body) = response_body_replace {
+            let header_filter_result = state.plugins.run_phase(WasmPhase::HeaderFilter, &plugin_context);
+            if !header_filter_result.allowed {
+                return (
+                    StatusCode::FORBIDDEN,
+                    header_filter_result.reason.unwrap_or_else(|| "blocked by header phase plugin".to_string()),
+                )
+                    .into_response();
+            }
+            let body_filter_result = state.plugins.run_phase(WasmPhase::BodyFilter, &plugin_context);
+            if !body_filter_result.allowed {
+                return (
+                    StatusCode::FORBIDDEN,
+                    body_filter_result.reason.unwrap_or_else(|| "blocked by body phase plugin".to_string()),
+                )
+                    .into_response();
+            }
+            let _ = state.plugins.run_phase(WasmPhase::Log, &plugin_context);
             return response_builder
                 .body(Body::from(replacement_body))
                 .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to build response").into_response());
         }
+
+        let header_filter_result = state.plugins.run_phase(WasmPhase::HeaderFilter, &plugin_context);
+        if !header_filter_result.allowed {
+            return (
+                StatusCode::FORBIDDEN,
+                header_filter_result.reason.unwrap_or_else(|| "blocked by header phase plugin".to_string()),
+            )
+                .into_response();
+        }
+        let body_filter_result = state.plugins.run_phase(WasmPhase::BodyFilter, &plugin_context);
+        if !body_filter_result.allowed {
+            return (
+                StatusCode::FORBIDDEN,
+                body_filter_result.reason.unwrap_or_else(|| "blocked by body phase plugin".to_string()),
+            )
+                .into_response();
+        }
+        let _ = state.plugins.run_phase(WasmPhase::Log, &plugin_context);
 
         let response_stream = upstream_response.bytes_stream();
         return response_builder
@@ -482,7 +519,7 @@ fn select_upstream_name(route: &Route, headers: &HeaderMap, client_key: &str, re
         return route.upstream.clone();
     }
 
-    let bucket = stable_percentage_bucket(route.name.as_str(), client_key, request_count);
+    let bucket = deterministic_percentage_bucket(route.name.as_str(), client_key, request_count);
     if bucket < split.canary_percentage as u64 {
         canary_upstream.clone()
     } else {
@@ -490,7 +527,7 @@ fn select_upstream_name(route: &Route, headers: &HeaderMap, client_key: &str, re
     }
 }
 
-fn stable_percentage_bucket(route_name: &str, client_key: &str, request_count: usize) -> u64 {
+fn deterministic_percentage_bucket(route_name: &str, client_key: &str, request_count: usize) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     route_name.hash(&mut hasher);
     client_key.hash(&mut hasher);
@@ -562,11 +599,13 @@ async fn maybe_apply_fault_injection(
     client_key: &str,
     request_count: usize,
 ) -> Option<Response> {
+    const FAULT_BUCKET_NAMESPACE: &str = "fault-injection";
+
     if !fault.enabled {
         return None;
     }
 
-    let bucket = stable_percentage_bucket("fault", client_key, request_count);
+    let bucket = deterministic_percentage_bucket(FAULT_BUCKET_NAMESPACE, client_key, request_count);
     if bucket >= fault.probability_percent as u64 {
         return None;
     }
