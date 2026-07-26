@@ -23,8 +23,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add graceful shutdown and draining for in-flight requests.
 - Add conformance/perf tests for concurrent load and backpressure.
 
-## PR3 — Full protocol parity layer
-- Status: in progress (initial gRPC-over-HTTP/2 route protocol detection now implemented in gateway request handling).
+## PR3 (completed) — Full protocol parity layer
 - Complete HTTP/2 and gRPC routing semantics parity.
 - Add TLS termination and upstream TLS/mTLS support.
 - Add SNI/certificate selection and rotation hooks.
@@ -32,7 +31,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add compatibility test suite against representative Kong route cases.
 
 ## PR4 — Security parity expansion
-- Status: in progress (initial OAuth2/OIDC bearer-token verification and group RBAC support implemented).
+- Status: in progress (OAuth2/OIDC bearer-token verification, group RBAC support, and mTLS identity extraction/policy enforcement hooks implemented).
 - Add OAuth2 and OpenID Connect verification flows.
 - Add mTLS identity extraction and policy enforcement.
 - Add ACL/group authorization model parity with Kong behavior.

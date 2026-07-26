@@ -21,7 +21,7 @@ use std::{
 use axum::{
     body::{to_bytes, Body},
     extract::{ConnectInfo, State},
-    http::{header::{AUTHORIZATION, CONTENT_TYPE}, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version},
+    http::{header::CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -246,11 +246,7 @@ async fn proxy_handler(
             .into_response();
     }
 
-    let auth_header = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-
-    let identity = match state.config.security.authenticate(auth_header) {
+    let identity = match state.config.security.authenticate(&headers) {
         Ok(identity) => identity,
         Err(err) => {
             state.metrics.inc_unauthorized();
@@ -263,6 +259,7 @@ async fn proxy_handler(
         mode: identity.mode,
         roles: &identity.roles,
         groups: &identity.groups,
+        subject: identity.subject.as_deref(),
         route_name: &route.name,
     };
 

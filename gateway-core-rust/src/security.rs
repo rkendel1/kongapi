@@ -1,4 +1,5 @@
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use http::{header::AUTHORIZATION, HeaderMap};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -26,6 +27,10 @@ pub struct SecurityConfig {
     pub oauth2: OAuth2Config,
     #[serde(default)]
     pub openid_connect: OpenIdConnectConfig,
+    #[serde(default)]
+    pub mtls: MtlsConfig,
+    #[serde(default)]
+    pub subject_rbac: Vec<SubjectBinding>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -72,6 +77,30 @@ pub struct OpenIdConnectConfig {
     pub groups_claim: String,
 }
 
+fn default_mtls_subject_header() -> String {
+    "x-client-cert-subject".to_string()
+}
+
+fn default_mtls_roles_header() -> String {
+    "x-client-cert-roles".to_string()
+}
+
+fn default_mtls_groups_header() -> String {
+    "x-client-cert-groups".to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct MtlsConfig {
+    #[serde(default = "default_mtls_subject_header")]
+    pub subject_header: String,
+    #[serde(default = "default_mtls_roles_header")]
+    pub roles_header: String,
+    #[serde(default = "default_mtls_groups_header")]
+    pub groups_header: String,
+    #[serde(default)]
+    pub allowed_subjects: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RoleBinding {
     pub role: String,
@@ -84,11 +113,18 @@ pub struct GroupBinding {
     pub route: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SubjectBinding {
+    pub subject: String,
+    pub route: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthContext<'a> {
     pub mode: AuthMode,
     pub roles: &'a [String],
     pub groups: &'a [String],
+    pub subject: Option<&'a str>,
     pub route_name: &'a str,
 }
 
@@ -97,15 +133,17 @@ pub struct AuthenticatedIdentity {
     pub mode: AuthMode,
     pub roles: Vec<String>,
     pub groups: Vec<String>,
+    pub subject: Option<String>,
 }
 
 impl SecurityConfig {
-    pub fn authenticate(&self, auth_header: Option<&str>) -> Result<AuthenticatedIdentity, String> {
+    pub fn authenticate(&self, headers: &HeaderMap) -> Result<AuthenticatedIdentity, String> {
         if self.enabled_modes.is_empty() {
             return Ok(AuthenticatedIdentity {
                 mode: AuthMode::Jwt,
                 roles: vec![],
                 groups: vec![],
+                subject: None,
             });
         }
 
@@ -113,7 +151,7 @@ impl SecurityConfig {
         match mode {
             AuthMode::Jwt => {
                 let claims = decode_token_claims(
-                    auth_header,
+                    headers,
                     &self.jwt.secret,
                     None,
                     None,
@@ -123,11 +161,12 @@ impl SecurityConfig {
                     mode,
                     roles: extract_claim_values(&claims, &self.jwt.roles_claim, true),
                     groups: extract_claim_values(&claims, &default_groups_claim(), false),
+                    subject: None,
                 })
             }
             AuthMode::OAuth2 => {
                 let claims = decode_token_claims(
-                    auth_header,
+                    headers,
                     &self.oauth2.secret,
                     non_empty(&self.oauth2.issuer),
                     non_empty(&self.oauth2.audience),
@@ -137,11 +176,12 @@ impl SecurityConfig {
                     mode,
                     roles: extract_claim_values(&claims, &self.oauth2.roles_claim, false),
                     groups: extract_claim_values(&claims, &self.oauth2.groups_claim, false),
+                    subject: None,
                 })
             }
             AuthMode::OpenIdConnect => {
                 let claims = decode_token_claims(
-                    auth_header,
+                    headers,
                     &self.openid_connect.secret,
                     non_empty(&self.openid_connect.issuer),
                     non_empty(&self.openid_connect.audience),
@@ -151,9 +191,31 @@ impl SecurityConfig {
                     mode,
                     roles: extract_claim_values(&claims, &self.openid_connect.roles_claim, false),
                     groups: extract_claim_values(&claims, &self.openid_connect.groups_claim, false),
+                    subject: None,
                 })
             }
-            AuthMode::Mtls => Err("mTLS auth mode is not implemented yet".to_string()),
+            AuthMode::Mtls => {
+                let subject = headers
+                    .get(&self.mtls.subject_header)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "missing mTLS subject".to_string())?
+                    .to_string();
+
+                if !self.mtls.allowed_subjects.is_empty()
+                    && !self.mtls.allowed_subjects.iter().any(|allowed| allowed == &subject)
+                {
+                    return Err("mTLS subject is not allowed".to_string());
+                }
+
+                Ok(AuthenticatedIdentity {
+                    mode,
+                    roles: extract_header_values(headers, &self.mtls.roles_header),
+                    groups: extract_header_values(headers, &self.mtls.groups_header),
+                    subject: Some(subject),
+                })
+            }
         }
     }
 
@@ -176,6 +238,13 @@ impl SecurityConfig {
             .map(|binding| binding.group.as_str())
             .collect();
 
+        let required_subjects: HashSet<&str> = self
+            .subject_rbac
+            .iter()
+            .filter(|binding| binding.route == auth.route_name)
+            .map(|binding| binding.subject.as_str())
+            .collect();
+
         let role_allowed = required_roles.is_empty()
             || auth
                 .roles
@@ -188,7 +257,13 @@ impl SecurityConfig {
                 .iter()
                 .any(|group| required_groups.contains(group.as_str()));
 
-        role_allowed && group_allowed
+        let subject_allowed = required_subjects.is_empty()
+            || auth
+                .subject
+                .map(|subject| required_subjects.contains(subject))
+                .unwrap_or(false);
+
+        role_allowed && group_allowed && subject_allowed
     }
 }
 
@@ -201,7 +276,7 @@ fn non_empty(value: &str) -> Option<&str> {
 }
 
 fn decode_token_claims(
-    auth_header: Option<&str>,
+    headers: &HeaderMap,
     secret: &str,
     issuer: Option<&str>,
     audience: Option<&str>,
@@ -211,7 +286,9 @@ fn decode_token_claims(
         return Err("token secret is not configured".to_string());
     }
 
-    let bearer = auth_header
+    let bearer = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
         .and_then(|header| header.strip_prefix("Bearer "))
         .ok_or_else(|| "missing bearer token".to_string())?;
 
@@ -251,11 +328,31 @@ fn extract_claim_values(claims: &serde_json::Value, claim_name: &str, include_le
     values
 }
 
+fn extract_header_values(headers: &HeaderMap, header_name: &str) -> Vec<String> {
+    headers
+        .get(header_name)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(',')
+                .flat_map(str::split_whitespace)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
+    use http::HeaderMap;
     use jsonwebtoken::{encode, EncodingKey, Header};
 
-    use super::{AuthContext, AuthMode, GroupBinding, OpenIdConnectConfig, OAuth2Config, RoleBinding, SecurityConfig};
+    use super::{
+        AuthContext, AuthMode, GroupBinding, MtlsConfig, OpenIdConnectConfig, OAuth2Config, RoleBinding,
+        SecurityConfig, SubjectBinding,
+    };
 
     #[test]
     fn denies_disabled_auth_mode() {
@@ -266,6 +363,8 @@ mod tests {
             jwt: Default::default(),
             oauth2: Default::default(),
             openid_connect: Default::default(),
+            mtls: Default::default(),
+            subject_rbac: vec![],
         };
 
         let roles = vec!["reader".to_string()];
@@ -274,6 +373,7 @@ mod tests {
             mode: AuthMode::OAuth2,
             roles: &roles,
             groups: &groups,
+            subject: None,
             route_name: "users",
         };
 
@@ -292,6 +392,8 @@ mod tests {
             jwt: Default::default(),
             oauth2: Default::default(),
             openid_connect: Default::default(),
+            mtls: Default::default(),
+            subject_rbac: vec![],
         };
 
         let roles = vec!["reader".to_string()];
@@ -300,6 +402,7 @@ mod tests {
             mode: AuthMode::Jwt,
             roles: &roles,
             groups: &groups,
+            subject: None,
             route_name: "users",
         };
 
@@ -332,10 +435,14 @@ mod tests {
             },
             oauth2: Default::default(),
             openid_connect: Default::default(),
+            mtls: Default::default(),
+            subject_rbac: vec![],
         };
 
         let auth_header = ["Bearer ", &token].concat();
-        let identity = cfg.authenticate(Some(&auth_header)).expect("jwt auth should succeed");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", auth_header.parse().expect("header value should parse"));
+        let identity = cfg.authenticate(&headers).expect("jwt auth should succeed");
         assert_eq!(identity.mode, AuthMode::Jwt);
         assert_eq!(identity.roles, vec!["admin"]);
     }
@@ -372,10 +479,14 @@ mod tests {
                 groups_claim: "groups".to_string(),
             },
             openid_connect: Default::default(),
+            mtls: Default::default(),
+            subject_rbac: vec![],
         };
 
         let auth_header = ["Bearer ", &token].concat();
-        let identity = cfg.authenticate(Some(&auth_header)).expect("oauth2 auth should succeed");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", auth_header.parse().expect("header value should parse"));
+        let identity = cfg.authenticate(&headers).expect("oauth2 auth should succeed");
         assert_eq!(identity.mode, AuthMode::OAuth2);
         assert_eq!(identity.roles, vec!["read", "write"]);
         assert_eq!(identity.groups, vec!["engineering"]);
@@ -413,10 +524,14 @@ mod tests {
                 roles_claim: "roles".to_string(),
                 groups_claim: "groups".to_string(),
             },
+            mtls: Default::default(),
+            subject_rbac: vec![],
         };
 
         let auth_header = ["Bearer ", &token].concat();
-        let identity = cfg.authenticate(Some(&auth_header)).expect("oidc auth should succeed");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", auth_header.parse().expect("header value should parse"));
+        let identity = cfg.authenticate(&headers).expect("oidc auth should succeed");
         assert_eq!(identity.mode, AuthMode::OpenIdConnect);
         assert_eq!(identity.roles, vec!["admin"]);
         assert_eq!(identity.groups, vec!["sre"]);
@@ -434,6 +549,8 @@ mod tests {
             jwt: Default::default(),
             oauth2: Default::default(),
             openid_connect: Default::default(),
+            mtls: Default::default(),
+            subject_rbac: vec![],
         };
 
         let roles = vec![];
@@ -442,6 +559,66 @@ mod tests {
             mode: AuthMode::Jwt,
             roles: &roles,
             groups: &groups,
+            subject: None,
+            route_name: "users",
+        };
+
+        assert!(cfg.authorize(&auth));
+    }
+
+    #[test]
+    fn authenticates_mtls_identity_from_headers() {
+        let cfg = SecurityConfig {
+            enabled_modes: vec![AuthMode::Mtls],
+            rbac: vec![],
+            group_rbac: vec![],
+            jwt: Default::default(),
+            oauth2: Default::default(),
+            openid_connect: Default::default(),
+            mtls: MtlsConfig {
+                subject_header: "x-client-subject".to_string(),
+                roles_header: "x-client-roles".to_string(),
+                groups_header: "x-client-groups".to_string(),
+                allowed_subjects: vec!["CN=svc-a".to_string()],
+            },
+            subject_rbac: vec![],
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-client-subject", "CN=svc-a".parse().expect("header value should parse"));
+        headers.insert("x-client-roles", "admin,writer".parse().expect("header value should parse"));
+        headers.insert("x-client-groups", "platform ops".parse().expect("header value should parse"));
+
+        let identity = cfg.authenticate(&headers).expect("mTLS auth should succeed");
+        assert_eq!(identity.mode, AuthMode::Mtls);
+        assert_eq!(identity.subject.as_deref(), Some("CN=svc-a"));
+        assert_eq!(identity.roles, vec!["admin", "writer"]);
+        assert_eq!(identity.groups, vec!["platform", "ops"]);
+    }
+
+    #[test]
+    fn enforces_route_subject_binding() {
+        let cfg = SecurityConfig {
+            enabled_modes: vec![AuthMode::Mtls],
+            rbac: vec![],
+            group_rbac: vec![],
+            jwt: Default::default(),
+            oauth2: Default::default(),
+            openid_connect: Default::default(),
+            mtls: Default::default(),
+            subject_rbac: vec![SubjectBinding {
+                subject: "CN=svc-a".to_string(),
+                route: "users".to_string(),
+            }],
+        };
+
+        let roles = vec![];
+        let groups = vec![];
+        let auth = AuthContext {
+            mode: AuthMode::Mtls,
+            roles: &roles,
+            groups: &groups,
+            subject: Some("CN=svc-a"),
             route_name: "users",
         };
 

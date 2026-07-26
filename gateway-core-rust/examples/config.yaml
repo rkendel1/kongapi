@@ -51,9 +51,15 @@ security:
   jwt:
     secret: replace-with-real-secret
     roles_claim: roles
+  mtls:
+    subject_header: x-client-cert-subject
+    roles_header: x-client-cert-roles
+    groups_header: x-client-cert-groups
+    allowed_subjects: []
   rbac:
     - role: admin
       route: users-v1
+  subject_rbac: []
 
 rate_limit:
   enabled: true

@@ -8,6 +8,8 @@ Current slice includes:
 - reverse proxy forwarding with hop-by-hop header filtering
 - load balancing (round-robin, least-connections, hash)
 - JWT auth verification + route RBAC checks
+- OAuth2/OIDC bearer-token verification + group RBAC checks
+- mTLS identity extraction hooks with route subject policy checks
 - in-memory token-bucket rate limiting
 - plugin execution pipeline (declared plugin lifecycle)
 - bounded retries for idempotent requests
