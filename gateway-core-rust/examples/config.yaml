@@ -1,0 +1,25 @@
+routes:
+  - name: users-v1
+    path_prefix: /api/v1/users
+    upstream: users-service
+    protocols: [http1, http2]
+
+upstreams:
+  - name: users-service
+    strategy: round-robin
+    targets:
+      - id: users-1
+        address: 127.0.0.1:9001
+      - id: users-2
+        address: 127.0.0.1:9002
+
+security:
+  enabled_modes: [jwt]
+  rbac:
+    - role: admin
+      route: users-v1
+
+plugins:
+  - name: jwt_auth
+    module: plugins.jwt_auth
+    wasm_path: examples/plugins/jwt_auth/jwt_auth.wasm
