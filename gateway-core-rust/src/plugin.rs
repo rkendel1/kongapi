@@ -104,7 +104,7 @@ impl GatewayPlugin for DeclaredPlugin {
     }
 
     fn execute(&self, phase: WasmPhase, ctx: &PluginContext) -> PluginResult {
-        if !self.supports_phase(phase.clone()) {
+        if !self.supports_phase(phase) {
             return PluginResult {
                 allowed: true,
                 reason: None,
@@ -124,7 +124,7 @@ impl GatewayPlugin for DeclaredPlugin {
             }
             PluginRuntime::Wasm => {
                 let call = WasmCall::new(
-                    phase.clone(),
+                    phase,
                     self.name.clone(),
                     self.required_capabilities.clone(),
                     serde_json::to_vec(ctx).unwrap_or_default(),
@@ -196,11 +196,11 @@ impl PluginManager {
 
     pub fn run_phase(&self, phase: WasmPhase, ctx: &PluginContext) -> PluginResult {
         for plugin in &self.plugins {
-            if !plugin.supports_phase(phase.clone()) {
+            if !plugin.supports_phase(phase) {
                 continue;
             }
 
-            let result = plugin.execute(phase.clone(), ctx);
+            let result = plugin.execute(phase, ctx);
             if !result.allowed {
                 return result;
             }

@@ -39,7 +39,7 @@ pub fn select_target<'a>(
                 if weight == 0 {
                     usize::MAX
                 } else {
-                    target.active_connections / weight.max(1)
+                    target.active_connections / weight
                 }
             }),
         BalancingStrategy::Hash => {

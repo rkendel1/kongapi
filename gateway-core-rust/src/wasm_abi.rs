@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 pub const ABI_VERSION: u32 = 1;
 pub const PLUGIN_CONTRACT_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum WasmPhase {
     Init,
@@ -13,7 +13,7 @@ pub enum WasmPhase {
     Log,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum WasmCapability {
     ReadHeaders,

@@ -9,6 +9,7 @@ mod security;
 mod wasm_abi;
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     hash::{Hash, Hasher},
     net::SocketAddr,
@@ -283,11 +284,14 @@ async fn proxy_handler(
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
     }
 
-    if let Some(fault_response) = maybe_apply_fault_injection(&route.fault_injection, &client_key, state.request_counter.load(Ordering::Relaxed)).await {
+    let request_count = state.request_counter.load(Ordering::Relaxed);
+    if let Some(fault_response) =
+        maybe_apply_fault_injection(&route.fault_injection, &client_key, request_count).await
+    {
         return fault_response;
     }
 
-    let selected_upstream_name = select_upstream_name(route, &headers, &client_key, state.request_counter.load(Ordering::Relaxed));
+    let selected_upstream_name = select_upstream_name(route, &headers, &client_key, request_count);
     let upstream = match state
         .config
         .upstreams
@@ -306,8 +310,7 @@ async fn proxy_handler(
         return (StatusCode::BAD_GATEWAY, "runtime state unavailable").into_response();
     };
 
-    let transformed_path_and_query =
-        rewrite_path_and_query(route, path, original_path_and_query).unwrap_or_else(|| original_path_and_query.to_string());
+    let transformed_path_and_query = rewrite_path_and_query(route, path, original_path_and_query);
     let transformed_headers = transform_request_headers(&headers, &route.transform.request);
     let overall_timeout = Duration::from_millis(state.config.server.proxy.request_timeout_ms);
     let retry_cfg = &state.config.server.proxy.retries;
@@ -535,14 +538,16 @@ fn deterministic_percentage_bucket(route_name: &str, client_key: &str, request_c
     hasher.finish() % 100
 }
 
-fn rewrite_path_and_query(route: &Route, path: &str, path_and_query: &str) -> Option<String> {
-    let replacement = route.transform.request.path_prefix_rewrite.as_ref()?;
+fn rewrite_path_and_query<'a>(route: &'a Route, path: &'a str, path_and_query: &'a str) -> Cow<'a, str> {
+    let Some(replacement) = route.transform.request.path_prefix_rewrite.as_ref() else {
+        return Cow::Borrowed(path_and_query);
+    };
     if !path.starts_with(&route.path_prefix) {
-        return Some(path_and_query.to_string());
+        return Cow::Borrowed(path_and_query);
     }
 
     let suffix = &path_and_query[route.path_prefix.len()..];
-    Some(format!("{replacement}{suffix}"))
+    Cow::Owned(format!("{replacement}{suffix}"))
 }
 
 fn transform_request_headers(headers: &HeaderMap, transform: &RequestTransform) -> Vec<(HeaderName, HeaderValue)> {

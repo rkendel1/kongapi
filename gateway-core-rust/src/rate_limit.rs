@@ -7,7 +7,7 @@ use std::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitPolicy {
     TokenBucket,
@@ -161,7 +161,7 @@ impl RateLimiter {
                 }
             }
 
-            let policy = rule.policy.clone().unwrap_or_else(|| self.config.policy.clone());
+            let policy = rule.policy.unwrap_or(self.config.policy);
             if !self.apply_policy(&policy, &rule, &mut next, now) {
                 return false;
             }
@@ -210,7 +210,7 @@ impl RateLimiter {
                         RateLimitPolicy::FixedWindow => self.config.fixed_window_seconds,
                         RateLimitPolicy::SlidingWindow => self.config.sliding_window_seconds,
                     },
-                    policy: Some(self.config.policy.clone()),
+                    policy: Some(self.config.policy),
                 },
                 ctx.client.to_string(),
             )];

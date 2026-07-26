@@ -631,13 +631,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-client-subject", "CN=svc-a".parse().expect("header value should parse"));
         headers.insert("x-client-roles", "admin,writer".parse().expect("header value should parse"));
-        headers.insert("x-client-groups", "platform ops".parse().expect("header value should parse"));
+        headers.insert("x-client-groups", "platform,ops".parse().expect("header value should parse"));
 
         let identity = cfg.authenticate(&headers).expect("mTLS auth should succeed");
         assert_eq!(identity.mode, AuthMode::Mtls);
         assert_eq!(identity.subject.as_deref(), Some("CN=svc-a"));
         assert_eq!(identity.roles, vec!["admin", "writer"]);
-        assert_eq!(identity.groups, vec!["platform ops"]);
+        assert_eq!(identity.groups, vec!["platform", "ops"]);
     }
 
     #[test]
