@@ -111,6 +111,32 @@ mod tests {
         assert!(!limiter.check("client-a"));
     }
 
+
+    #[test]
+    fn handles_concurrent_burst_with_bounded_capacity() {
+        use std::sync::Arc;
+
+        let limiter = Arc::new(RateLimiter::new(RateLimitConfig {
+            enabled: true,
+            capacity: 25,
+            refill_per_second: 0,
+        }));
+
+        let mut handles = vec![];
+        for _ in 0..100 {
+            let limiter = limiter.clone();
+            handles.push(std::thread::spawn(move || limiter.check("burst-client")));
+        }
+
+        let allowed = handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .filter(|allowed| *allowed)
+            .count();
+
+        assert_eq!(allowed, 25);
+    }
+
     #[test]
     fn refills_tokens_over_time() {
         let limiter = RateLimiter::new(RateLimitConfig {

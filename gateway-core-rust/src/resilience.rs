@@ -56,12 +56,12 @@ impl RuntimeRegistry {
         let mut targets = self.lock_targets();
         let state = targets.entry(key.to_string()).or_default();
 
-        if !state.active_healthy || !state.passive_healthy {
+        if !state.active_healthy {
             return false;
         }
 
         match &mut state.circuit_state {
-            CircuitState::Closed => true,
+            CircuitState::Closed => state.passive_healthy,
             CircuitState::Open { opened_at } => {
                 if opened_at.elapsed() >= Duration::from_millis(self.breaker_cfg.open_ms) {
                     state.circuit_state = CircuitState::HalfOpen {
