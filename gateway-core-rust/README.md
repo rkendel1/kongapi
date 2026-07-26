@@ -10,6 +10,10 @@ Current slice includes:
 - JWT auth verification + route RBAC checks
 - in-memory token-bucket rate limiting
 - plugin execution pipeline (declared plugin lifecycle)
+- bounded retries for idempotent requests
+- active/passive upstream health gating + circuit breaker state
+- configurable timeout and keep-alive runtime settings
+- graceful shutdown with in-flight request draining
 - `/healthz` and `/metrics` endpoints with Prometheus text output
 
 ## Run

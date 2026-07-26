@@ -3,26 +3,36 @@ mod config;
 mod observability;
 mod plugin;
 mod rate_limit;
+mod resilience;
 mod router;
 mod security;
 mod wasm_abi;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use axum::{
     body::{to_bytes, Body},
     extract::{ConnectInfo, State},
-    http::{header::AUTHORIZATION, HeaderMap, Method, StatusCode, Uri, Version},
+    http::{header::AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version},
     response::{IntoResponse, Response},
     routing::get,
     Router,
 };
 
 use balancer::select_target;
-use config::GatewayConfig;
+use config::{GatewayConfig, UpstreamConfig};
 use observability::Metrics;
 use plugin::{PluginContext, PluginManager};
 use rate_limit::RateLimiter;
+use resilience::{should_retry_method, should_retry_status, target_key, RuntimeRegistry};
 use router::Protocol;
 use security::{AuthContext, AuthMode};
 
@@ -33,7 +43,27 @@ struct AppState {
     limiter: Arc<RateLimiter>,
     plugins: Arc<PluginManager>,
     client: reqwest::Client,
-    request_counter: Arc<std::sync::atomic::AtomicUsize>,
+    request_counter: Arc<AtomicUsize>,
+    draining: Arc<AtomicBool>,
+    in_flight: Arc<AtomicUsize>,
+    runtime: Arc<HashMap<String, Arc<RuntimeRegistry>>>,
+}
+
+struct InFlightGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl InFlightGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self { counter }
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[tokio::main]
@@ -57,22 +87,35 @@ async fn main() {
         }
     };
 
+    let runtime = Arc::new(build_runtime_registry(&config));
+
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(config.server.proxy.max_idle_per_host)
+        .pool_idle_timeout(Duration::from_secs(config.server.proxy.idle_timeout_secs))
+        .connect_timeout(Duration::from_millis(config.server.proxy.connect_timeout_ms))
+        .timeout(Duration::from_millis(config.server.proxy.read_timeout_ms))
+        .build()
+        .expect("reqwest client creation should succeed");
+
     let state = AppState {
         config: Arc::new(config.clone()),
         metrics: Arc::new(Metrics::default()),
         limiter: Arc::new(RateLimiter::new(config.rate_limit.clone())),
         plugins: Arc::new(plugin_manager),
-        client: reqwest::Client::builder()
-            .build()
-            .expect("reqwest client creation should succeed"),
-        request_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        client,
+        request_counter: Arc::new(AtomicUsize::new(0)),
+        draining: Arc::new(AtomicBool::new(false)),
+        in_flight: Arc::new(AtomicUsize::new(0)),
+        runtime,
     };
+
+    spawn_active_health_checks(&state);
 
     let app = Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/metrics", get(metrics_handler))
         .fallback(proxy_handler)
-        .with_state(Arc::new(state));
+        .with_state(Arc::new(state.clone()));
 
     let addr: SocketAddr = config
         .server
@@ -87,8 +130,68 @@ async fn main() {
     tracing::info!(listen_addr = %addr, "gateway core rust slice listening");
 
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(graceful_shutdown_signal(Arc::new(state), config.server.shutdown.clone()))
         .await
         .expect("gateway server failed");
+}
+
+fn build_runtime_registry(config: &GatewayConfig) -> HashMap<String, Arc<RuntimeRegistry>> {
+    config
+        .upstreams
+        .iter()
+        .map(|upstream| {
+            (
+                upstream.name.clone(),
+                Arc::new(RuntimeRegistry::new(
+                    upstream.health_checks.passive.clone(),
+                    upstream.circuit_breaker.clone(),
+                )),
+            )
+        })
+        .collect()
+}
+
+fn spawn_active_health_checks(state: &AppState) {
+    for upstream in &state.config.upstreams {
+        if !upstream.health_checks.active.enabled {
+            continue;
+        }
+
+        let Some(registry) = state.runtime.get(&upstream.name).cloned() else {
+            continue;
+        };
+
+        let client = state.client.clone();
+        let draining = state.draining.clone();
+        let upstream_name = upstream.name.clone();
+        let targets = upstream.targets.clone();
+        let active_cfg = upstream.health_checks.active.clone();
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(active_cfg.interval_ms));
+            loop {
+                interval.tick().await;
+                if draining.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                for target in &targets {
+                    let url = format!("http://{}{}", target.address, active_cfg.path);
+                    let healthy = match client
+                        .get(url)
+                        .timeout(Duration::from_millis(active_cfg.timeout_ms))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => resp.status().is_success(),
+                        Err(_) => false,
+                    };
+
+                    registry.set_active_health(&target_key(&upstream_name, &target.id), healthy);
+                }
+            }
+        });
+    }
 }
 
 async fn healthz_handler() -> impl IntoResponse {
@@ -112,6 +215,12 @@ async fn proxy_handler(
     body: Body,
 ) -> Response {
     state.metrics.inc_request();
+
+    if state.draining.load(Ordering::Relaxed) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "gateway is draining").into_response();
+    }
+
+    let _guard = InFlightGuard::new(state.in_flight.clone());
 
     let protocol = match version {
         Version::HTTP_2 => Protocol::Http2,
@@ -183,24 +292,19 @@ async fn proxy_handler(
         }
     };
 
-    let request_count = state
-        .request_counter
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    let target = match select_target(
-        upstream.strategy.clone(),
-        &upstream.targets,
-        Some(&client_key),
-        request_count,
-    ) {
-        Some(target) => target,
-        None => {
-            state.metrics.inc_error();
-            return (StatusCode::BAD_GATEWAY, "no upstream target available").into_response();
-        }
+    let Some(runtime_registry) = state.runtime.get(&upstream.name) else {
+        state.metrics.inc_error();
+        return (StatusCode::BAD_GATEWAY, "runtime state unavailable").into_response();
     };
 
-    let upstream_url = format!("http://{}{}", target.address, path_and_query);
+    let forwarded_headers = forwardable_headers(&headers);
+    let overall_timeout = Duration::from_millis(state.config.server.proxy.request_timeout_ms);
+    let retry_cfg = &state.config.server.proxy.retries;
+    let max_attempts = if should_retry_method(&method, retry_cfg.idempotent_only) {
+        retry_cfg.max_attempts.max(1)
+    } else {
+        1
+    };
 
     let body_bytes = match to_bytes(body, state.config.server.max_request_body_bytes).await {
         Ok(bytes) => bytes,
@@ -210,44 +314,134 @@ async fn proxy_handler(
         }
     };
 
-    let mut request_builder = state.client.request(method.clone(), upstream_url);
-    for (name, value) in &headers {
-        let header_name = name.as_str();
-        if !is_hop_by_hop_header(header_name) && header_name != "host" {
+    let mut last_status: Option<StatusCode> = None;
+    let started = Instant::now();
+    for attempt in 1..=max_attempts {
+        if started.elapsed() >= overall_timeout {
+            state.metrics.inc_upstream_failure();
+            return (StatusCode::GATEWAY_TIMEOUT, "upstream request timed out").into_response();
+        }
+
+        let request_count = state.request_counter.fetch_add(1, Ordering::Relaxed);
+        let Some(target) = pick_target(upstream, runtime_registry, &client_key, request_count + attempt as usize) else {
+            state.metrics.inc_error();
+            return (StatusCode::BAD_GATEWAY, "no healthy upstream target available").into_response();
+        };
+
+        let target_runtime_key = target_key(&upstream.name, &target.id);
+        let upstream_url = format!("http://{}{}", target.address, path_and_query);
+
+        let mut request_builder = state.client.request(method.clone(), upstream_url);
+        for (name, value) in &forwarded_headers {
             request_builder = request_builder.header(name, value);
         }
+
+        let send_result = request_builder.body(body_bytes.clone()).send().await;
+        let upstream_response = match send_result {
+            Ok(response) => response,
+            Err(err) => {
+                runtime_registry.record_failure(&target_runtime_key);
+                state.metrics.inc_upstream_failure();
+                tracing::warn!(error = %err, route = %route.name, attempt, "upstream request failed");
+
+                if attempt < max_attempts {
+                    tokio::time::sleep(Duration::from_millis(retry_cfg.backoff_ms)).await;
+                    continue;
+                }
+
+                return (StatusCode::BAD_GATEWAY, "upstream request failed").into_response();
+            }
+        };
+
+        if should_retry_status(upstream_response.status()) && attempt < max_attempts {
+            runtime_registry.record_failure(&target_runtime_key);
+            last_status = Some(upstream_response.status());
+            tokio::time::sleep(Duration::from_millis(retry_cfg.backoff_ms)).await;
+            continue;
+        }
+
+        if upstream_response.status().is_server_error() {
+            runtime_registry.record_failure(&target_runtime_key);
+        } else {
+            runtime_registry.record_success(&target_runtime_key);
+        }
+
+        let status = upstream_response.status();
+        let upstream_headers = upstream_response.headers().clone();
+        let response_stream = upstream_response.bytes_stream();
+
+        let mut response_builder = Response::builder().status(status);
+        for (name, value) in &upstream_headers {
+            if !is_hop_by_hop_header(name.as_str()) {
+                response_builder = response_builder.header(name, value);
+            }
+        }
+
+        return response_builder
+            .body(Body::from_stream(response_stream))
+            .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to build response").into_response());
     }
 
-    let upstream_response = match request_builder.body(body_bytes).send().await {
-        Ok(response) => response,
-        Err(err) => {
-            state.metrics.inc_upstream_failure();
-            tracing::error!(error = %err, route = %route.name, "upstream request failed");
-            return (StatusCode::BAD_GATEWAY, "upstream request failed").into_response();
-        }
-    };
+    match last_status {
+        Some(status) => (status, "upstream retries exhausted").into_response(),
+        None => (StatusCode::BAD_GATEWAY, "upstream retries exhausted").into_response(),
+    }
+}
 
-    let status = upstream_response.status();
-    let upstream_headers = upstream_response.headers().clone();
-    let response_body = match upstream_response.bytes().await {
-        Ok(body) => body,
-        Err(err) => {
-            state.metrics.inc_upstream_failure();
-            tracing::error!(error = %err, "failed to read upstream response body");
-            return (StatusCode::BAD_GATEWAY, "upstream response invalid").into_response();
-        }
-    };
+fn pick_target(
+    upstream: &UpstreamConfig,
+    runtime: &RuntimeRegistry,
+    request_key: &str,
+    request_count: usize,
+) -> Option<crate::balancer::UpstreamTarget> {
+    let available_targets = upstream
+        .targets
+        .iter()
+        .filter(|target| runtime.is_available(&target_key(&upstream.name, &target.id)))
+        .cloned()
+        .collect::<Vec<_>>();
 
-    let mut response_builder = Response::builder().status(status);
-    for (name, value) in &upstream_headers {
-        if !is_hop_by_hop_header(name.as_str()) {
-            response_builder = response_builder.header(name, value);
-        }
+    if available_targets.is_empty() {
+        return None;
     }
 
-    response_builder
-        .body(Body::from(response_body))
-        .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to build response").into_response())
+    select_target(
+        upstream.strategy.clone(),
+        &available_targets,
+        Some(request_key),
+        request_count,
+    )
+    .cloned()
+}
+
+async fn graceful_shutdown_signal(state: Arc<AppState>, shutdown_cfg: config::ShutdownConfig) {
+    if tokio::signal::ctrl_c().await.is_err() {
+        return;
+    }
+
+    tracing::info!("shutdown signal received; entering draining mode");
+    state.draining.store(true, Ordering::Relaxed);
+
+    let deadline = Instant::now() + Duration::from_millis(shutdown_cfg.drain_timeout_ms);
+    while state.in_flight.load(Ordering::Relaxed) > 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(shutdown_cfg.drain_poll_ms)).await;
+    }
+
+    tracing::info!(in_flight = state.in_flight.load(Ordering::Relaxed), "draining complete");
+}
+
+fn forwardable_headers(headers: &HeaderMap) -> Vec<(HeaderName, HeaderValue)> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let header_name = name.as_str();
+            if is_hop_by_hop_header(header_name) || header_name.eq_ignore_ascii_case("host") {
+                return None;
+            }
+
+            Some((name.clone(), value.clone()))
+        })
+        .collect()
 }
 
 fn is_hop_by_hop_header(header_name: &str) -> bool {

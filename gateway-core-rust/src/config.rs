@@ -32,6 +32,10 @@ pub struct ServerConfig {
     pub listen_addr: String,
     #[serde(default = "default_max_request_body_bytes")]
     pub max_request_body_bytes: usize,
+    #[serde(default)]
+    pub proxy: ProxyRuntimeConfig,
+    #[serde(default)]
+    pub shutdown: ShutdownConfig,
 }
 
 fn default_listen_addr() -> String {
@@ -47,6 +51,114 @@ impl Default for ServerConfig {
         Self {
             listen_addr: default_listen_addr(),
             max_request_body_bytes: default_max_request_body_bytes(),
+            proxy: ProxyRuntimeConfig::default(),
+            shutdown: ShutdownConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProxyRuntimeConfig {
+    #[serde(default = "default_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_read_timeout_ms")]
+    pub read_timeout_ms: u64,
+    #[serde(default = "default_request_timeout_ms")]
+    pub request_timeout_ms: u64,
+    #[serde(default = "default_max_idle_per_host")]
+    pub max_idle_per_host: usize,
+    #[serde(default = "default_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+    #[serde(default)]
+    pub retries: RetryConfig,
+}
+
+fn default_connect_timeout_ms() -> u64 {
+    1000
+}
+
+fn default_read_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_request_timeout_ms() -> u64 {
+    7000
+}
+
+fn default_max_idle_per_host() -> usize {
+    64
+}
+
+fn default_idle_timeout_secs() -> u64 {
+    90
+}
+
+impl Default for ProxyRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: default_connect_timeout_ms(),
+            read_timeout_ms: default_read_timeout_ms(),
+            request_timeout_ms: default_request_timeout_ms(),
+            max_idle_per_host: default_max_idle_per_host(),
+            idle_timeout_secs: default_idle_timeout_secs(),
+            retries: RetryConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RetryConfig {
+    #[serde(default = "default_retry_max_attempts")]
+    pub max_attempts: u8,
+    #[serde(default = "default_retry_backoff_ms")]
+    pub backoff_ms: u64,
+    #[serde(default = "default_retry_idempotent_only")]
+    pub idempotent_only: bool,
+}
+
+fn default_retry_max_attempts() -> u8 {
+    3
+}
+
+fn default_retry_backoff_ms() -> u64 {
+    50
+}
+
+fn default_retry_idempotent_only() -> bool {
+    true
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_retry_max_attempts(),
+            backoff_ms: default_retry_backoff_ms(),
+            idempotent_only: default_retry_idempotent_only(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ShutdownConfig {
+    #[serde(default = "default_drain_timeout_ms")]
+    pub drain_timeout_ms: u64,
+    #[serde(default = "default_drain_poll_ms")]
+    pub drain_poll_ms: u64,
+}
+
+fn default_drain_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_drain_poll_ms() -> u64 {
+    50
+}
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self {
+            drain_timeout_ms: default_drain_timeout_ms(),
+            drain_poll_ms: default_drain_poll_ms(),
         }
     }
 }
@@ -56,6 +168,133 @@ pub struct UpstreamConfig {
     pub name: String,
     pub strategy: BalancingStrategy,
     pub targets: Vec<UpstreamTarget>,
+    #[serde(default)]
+    pub health_checks: HealthCheckConfig,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HealthCheckConfig {
+    #[serde(default)]
+    pub active: ActiveHealthCheckConfig,
+    #[serde(default)]
+    pub passive: PassiveHealthCheckConfig,
+}
+
+impl Default for HealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            active: ActiveHealthCheckConfig::default(),
+            passive: PassiveHealthCheckConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ActiveHealthCheckConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_healthcheck_path")]
+    pub path: String,
+    #[serde(default = "default_healthcheck_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_healthcheck_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_healthy_threshold")]
+    pub healthy_threshold: u32,
+    #[serde(default = "default_unhealthy_threshold")]
+    pub unhealthy_threshold: u32,
+}
+
+fn default_healthcheck_path() -> String {
+    "/healthz".to_string()
+}
+
+fn default_healthcheck_interval_ms() -> u64 {
+    5_000
+}
+
+fn default_healthcheck_timeout_ms() -> u64 {
+    1_000
+}
+
+fn default_healthy_threshold() -> u32 {
+    2
+}
+
+fn default_unhealthy_threshold() -> u32 {
+    2
+}
+
+impl Default for ActiveHealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_healthcheck_path(),
+            interval_ms: default_healthcheck_interval_ms(),
+            timeout_ms: default_healthcheck_timeout_ms(),
+            healthy_threshold: default_healthy_threshold(),
+            unhealthy_threshold: default_unhealthy_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PassiveHealthCheckConfig {
+    #[serde(default = "default_failure_threshold")]
+    pub failure_threshold: u32,
+    #[serde(default = "default_success_threshold")]
+    pub success_threshold: u32,
+}
+
+fn default_failure_threshold() -> u32 {
+    3
+}
+
+fn default_success_threshold() -> u32 {
+    1
+}
+
+impl Default for PassiveHealthCheckConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: default_failure_threshold(),
+            success_threshold: default_success_threshold(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CircuitBreakerConfig {
+    #[serde(default = "default_breaker_failure_threshold")]
+    pub failure_threshold: u32,
+    #[serde(default = "default_breaker_open_ms")]
+    pub open_ms: u64,
+    #[serde(default = "default_half_open_max")]
+    pub half_open_max_requests: u32,
+}
+
+fn default_breaker_failure_threshold() -> u32 {
+    5
+}
+
+fn default_breaker_open_ms() -> u64 {
+    5_000
+}
+
+fn default_half_open_max() -> u32 {
+    1
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: default_breaker_failure_threshold(),
+            open_ms: default_breaker_open_ms(),
+            half_open_max_requests: default_half_open_max(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
