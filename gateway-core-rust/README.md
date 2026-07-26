@@ -1,17 +1,24 @@
 # gateway-core-rust
 
-Minimal Rust scaffold for a Kong Gateway core rewrite effort.
+First functional Rust replacement slice of a Kong-like gateway core.
 
-Included modules:
-- `router.rs` (reverse proxy route matching for HTTP/1.1, HTTP/2, gRPC)
-- `balancer.rs` (round-robin, least-connections, hash balancing)
-- `config.rs` (YAML/JSON declarative config + validation)
-- `security.rs` (auth modes + route RBAC checks)
-- `observability.rs` (tracing setup + in-process metrics counters)
-- `plugin.rs` (trait-based plugin lifecycle + execution)
-- `wasm_abi.rs` (portable Wasm ABI contract surface)
+Current slice includes:
+- async HTTP gateway server (Tokio + Axum)
+- route matching + upstream selection
+- reverse proxy forwarding with hop-by-hop header filtering
+- load balancing (round-robin, least-connections, hash)
+- JWT auth verification + route RBAC checks
+- in-memory token-bucket rate limiting
+- plugin execution pipeline (declared plugin lifecycle)
+- `/healthz` and `/metrics` endpoints with Prometheus text output
 
-Run tests:
+## Run
+
+```bash
+GATEWAY_CONFIG=examples/config.yaml cargo run
+```
+
+## Test
 
 ```bash
 cargo test

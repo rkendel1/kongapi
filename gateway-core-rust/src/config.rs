@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     balancer::{BalancingStrategy, UpstreamTarget},
+    rate_limit::RateLimitConfig,
     router::Route,
     security::SecurityConfig,
 };
@@ -12,13 +13,35 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GatewayConfig {
     #[serde(default)]
+    pub server: ServerConfig,
+    #[serde(default)]
     pub routes: Vec<Route>,
     #[serde(default)]
     pub upstreams: Vec<UpstreamConfig>,
     #[serde(default)]
     pub security: SecurityConfig,
     #[serde(default)]
+    pub rate_limit: RateLimitConfig,
+    #[serde(default)]
     pub plugins: Vec<PluginConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ServerConfig {
+    #[serde(default = "default_listen_addr")]
+    pub listen_addr: String,
+}
+
+fn default_listen_addr() -> String {
+    "127.0.0.1:3000".to_string()
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: default_listen_addr(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -53,6 +76,10 @@ impl GatewayConfig {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.routes.is_empty() {
+            return Err("at least one route must be configured".to_string());
+        }
+
         for route in &self.routes {
             if !self.upstreams.iter().any(|upstream| upstream.name == route.upstream) {
                 return Err(format!(
@@ -74,11 +101,12 @@ impl GatewayConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::GatewayConfig;
+    use super::{GatewayConfig, ServerConfig};
 
     #[test]
     fn rejects_unknown_upstream_reference() {
         let cfg = GatewayConfig {
+            server: ServerConfig::default(),
             routes: vec![crate::router::Route {
                 name: "r1".to_string(),
                 path_prefix: "/".to_string(),
@@ -87,6 +115,7 @@ mod tests {
             }],
             upstreams: vec![],
             security: crate::security::SecurityConfig::default(),
+            rate_limit: crate::rate_limit::RateLimitConfig::default(),
             plugins: vec![],
         };
 

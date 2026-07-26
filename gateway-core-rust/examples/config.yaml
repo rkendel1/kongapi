@@ -1,3 +1,6 @@
+server:
+  listen_addr: 127.0.0.1:3000
+
 routes:
   - name: users-v1
     path_prefix: /api/v1/users
@@ -15,9 +18,17 @@ upstreams:
 
 security:
   enabled_modes: [jwt]
+  jwt:
+    secret: replace-with-real-secret
+    roles_claim: roles
   rbac:
     - role: admin
       route: users-v1
+
+rate_limit:
+  enabled: true
+  capacity: 100
+  refill_per_second: 100
 
 plugins:
   - name: jwt_auth

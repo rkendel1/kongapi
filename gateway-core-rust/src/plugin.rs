@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::PluginConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginContext {
     pub route: String,
@@ -27,13 +29,47 @@ pub struct PluginManager {
     plugins: Vec<Box<dyn GatewayPlugin>>,
 }
 
+struct DeclaredPlugin {
+    name: String,
+    wasm_path: Option<String>,
+}
+
+impl GatewayPlugin for DeclaredPlugin {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn execute(&self, _ctx: &PluginContext) -> PluginResult {
+        if let Some(wasm) = &self.wasm_path {
+            tracing::debug!(plugin = %self.name, wasm_path = %wasm, "declared wasm plugin executed as passthrough");
+        }
+
+        PluginResult {
+            allowed: true,
+            reason: None,
+        }
+    }
+}
+
 impl PluginManager {
     pub fn new() -> Self {
         Self { plugins: vec![] }
     }
 
+    pub fn from_config(configs: &[PluginConfig]) -> Result<Self, String> {
+        let mut manager = Self::new();
+        for cfg in configs {
+            manager.register(Box::new(DeclaredPlugin {
+                name: cfg.name.clone(),
+                wasm_path: cfg.wasm_path.clone(),
+            }))?;
+        }
+        Ok(manager)
+    }
+
     pub fn register(&mut self, mut plugin: Box<dyn GatewayPlugin>) -> Result<(), String> {
         plugin.init()?;
+        tracing::info!(plugin = plugin.name(), "registered plugin");
         self.plugins.push(plugin);
         Ok(())
     }
@@ -92,7 +128,7 @@ mod tests {
             path: "/users".to_string(),
         });
 
-        assert_eq!(result.allowed, false);
+        assert!(!result.allowed);
         assert_eq!(result.reason.as_deref(), Some("blocked"));
     }
 }
