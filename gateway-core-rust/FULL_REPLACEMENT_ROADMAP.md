@@ -13,7 +13,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
   - plugin lifecycle scaffolding and declared Wasm plugin contract surface
   - baseline metrics/tracing endpoints
 
-## PR2 — Production proxy/runtime hardening
+## PR2 (completed) — Production proxy/runtime hardening
 - Add connection pooling and upstream keep-alive policy tuning.
 - Add request/response streaming proxy mode (avoid full-body buffering).
 - Add retries with bounded policy and idempotency checks.
@@ -24,6 +24,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add conformance/perf tests for concurrent load and backpressure.
 
 ## PR3 — Full protocol parity layer
+- Status: in progress (initial gRPC-over-HTTP/2 route protocol detection now implemented in gateway request handling).
 - Complete HTTP/2 and gRPC routing semantics parity.
 - Add TLS termination and upstream TLS/mTLS support.
 - Add SNI/certificate selection and rotation hooks.

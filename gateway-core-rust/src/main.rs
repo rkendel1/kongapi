@@ -21,7 +21,7 @@ use std::{
 use axum::{
     body::{to_bytes, Body},
     extract::{ConnectInfo, State},
-    http::{header::AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version},
+    http::{header::{AUTHORIZATION, CONTENT_TYPE}, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, Version},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -222,10 +222,7 @@ async fn proxy_handler(
 
     let _guard = InFlightGuard::new(state.in_flight.clone());
 
-    let protocol = match version {
-        Version::HTTP_2 => Protocol::Http2,
-        _ => Protocol::Http1,
-    };
+    let protocol = request_protocol(version, &headers);
 
     let path = uri.path();
     let path_and_query = uri.path_and_query().map(|v| v.as_str()).unwrap_or(path);
@@ -391,6 +388,21 @@ async fn proxy_handler(
     }
 }
 
+fn request_protocol(version: Version, headers: &HeaderMap) -> Protocol {
+    if version == Version::HTTP_2 {
+        if let Some(content_type) = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+            let media_type = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+            if media_type == "application/grpc" || media_type.starts_with("application/grpc+") {
+                return Protocol::Grpc;
+            }
+        }
+
+        return Protocol::Http2;
+    }
+
+    Protocol::Http1
+}
+
 fn pick_target(
     upstream: &UpstreamConfig,
     runtime: &RuntimeRegistry,
@@ -459,4 +471,24 @@ fn is_hop_by_hop_header(header_name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_protocol;
+    use crate::router::Protocol;
+    use axum::http::{header::CONTENT_TYPE, HeaderMap, HeaderValue, Version};
+
+    #[test]
+    fn detects_grpc_protocol_from_http2_content_type() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc+proto"));
+        assert_eq!(request_protocol(Version::HTTP_2, &headers), Protocol::Grpc);
+    }
+
+    #[test]
+    fn keeps_http2_protocol_without_grpc_content_type() {
+        let headers = HeaderMap::new();
+        assert_eq!(request_protocol(Version::HTTP_2, &headers), Protocol::Http2);
+    }
 }
