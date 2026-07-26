@@ -30,8 +30,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add L4 proxy mode planning and L7/L4 boundary interfaces.
 - Add compatibility test suite against representative Kong route cases.
 
-## PR4 — Security parity expansion
-- Status: in progress (OAuth2/OIDC bearer-token verification, group RBAC support, and mTLS identity extraction/policy enforcement hooks implemented).
+## PR4 (completed) — Security parity expansion
 - Add OAuth2 and OpenID Connect verification flows.
 - Add mTLS identity extraction and policy enforcement.
 - Add ACL/group authorization model parity with Kong behavior.
@@ -39,7 +38,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add key/cert hot reload and secret rotation handling.
 - Add security-focused integration tests and threat-model checks.
 
-## PR5 — Traffic controls parity
+## PR5 (completed) — Traffic controls parity
 - Add sliding window and fixed window policies in addition to token bucket.
 - Add route/service/consumer-scoped limits and quotas.
 - Add request/response transformations (headers/body/path rewrite).

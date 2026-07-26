@@ -10,6 +10,7 @@ mod wasm_abi;
 
 use std::{
     collections::HashMap,
+    hash::{Hash, Hasher},
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -31,9 +32,9 @@ use balancer::select_target;
 use config::{GatewayConfig, UpstreamConfig};
 use observability::Metrics;
 use plugin::{PluginContext, PluginManager};
-use rate_limit::RateLimiter;
+use rate_limit::{RateLimitContext, RateLimiter};
 use resilience::{should_retry_method, should_retry_status, target_key, RuntimeRegistry};
-use router::Protocol;
+use router::{FaultInjectionConfig, Protocol, RequestTransform, ResponseTransform, Route};
 use security::AuthContext;
 
 #[derive(Clone)]
@@ -225,7 +226,7 @@ async fn proxy_handler(
     let protocol = request_protocol(version, &headers);
 
     let path = uri.path();
-    let path_and_query = uri.path_and_query().map(|v| v.as_str()).unwrap_or(path);
+    let original_path_and_query = uri.path_and_query().map(|v| v.as_str()).unwrap_or(path);
 
     let route = match router::match_route(&state.config.routes, path, protocol) {
         Some(route) => route,
@@ -269,16 +270,27 @@ async fn proxy_handler(
     }
 
     let client_key = format!("{}:{}", route.name, client_addr.ip());
-    if !state.limiter.check(&client_key) {
+    let limiter_ctx = RateLimitContext {
+        route: &route.name,
+        service: &route.upstream,
+        consumer: identity.subject.as_deref(),
+        client: &client_key,
+    };
+    if !state.limiter.check_with_context(&limiter_ctx) {
         state.metrics.inc_rate_limited();
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
     }
 
+    if let Some(fault_response) = maybe_apply_fault_injection(&route.fault_injection, &client_key, state.request_counter.load(Ordering::Relaxed)).await {
+        return fault_response;
+    }
+
+    let selected_upstream_name = select_upstream_name(route, &headers, &client_key, state.request_counter.load(Ordering::Relaxed));
     let upstream = match state
         .config
         .upstreams
         .iter()
-        .find(|upstream| upstream.name == route.upstream)
+        .find(|upstream| upstream.name == selected_upstream_name)
     {
         Some(upstream) => upstream,
         None => {
@@ -292,7 +304,9 @@ async fn proxy_handler(
         return (StatusCode::BAD_GATEWAY, "runtime state unavailable").into_response();
     };
 
-    let forwarded_headers = forwardable_headers(&headers);
+    let transformed_path_and_query =
+        rewrite_path_and_query(route, path, original_path_and_query).unwrap_or_else(|| original_path_and_query.to_string());
+    let transformed_headers = transform_request_headers(&headers, &route.transform.request);
     let overall_timeout = Duration::from_millis(state.config.server.proxy.request_timeout_ms);
     let retry_cfg = &state.config.server.proxy.retries;
     let max_attempts = if should_retry_method(&method, retry_cfg.idempotent_only, retry_cfg.retry_unsafe_methods) {
@@ -327,14 +341,22 @@ async fn proxy_handler(
         };
 
         let target_runtime_key = target_key(&upstream.name, &target.id);
-        let upstream_url = format!("http://{}{}", target.address, path_and_query);
+        let upstream_url = format!("http://{}{}", target.address, transformed_path_and_query);
 
         let mut request_builder = state.client.request(method.clone(), upstream_url);
-        for (name, value) in &forwarded_headers {
+        for (name, value) in &transformed_headers {
             request_builder = request_builder.header(name, value);
         }
 
-        let send_result = request_builder.body(body_bytes.clone()).send().await;
+        let request_body = route
+            .transform
+            .request
+            .body_replace
+            .as_deref()
+            .map(|v| v.as_bytes().to_vec())
+            .unwrap_or_else(|| body_bytes.clone().to_vec());
+
+        let send_result = request_builder.body(request_body).send().await;
         let upstream_response = match send_result {
             Ok(response) => response,
             Err(err) => {
@@ -366,15 +388,23 @@ async fn proxy_handler(
 
         let status = upstream_response.status();
         let upstream_headers = upstream_response.headers().clone();
-        let response_stream = upstream_response.bytes_stream();
+        let response_body_replace = route.transform.response.body_replace.clone();
+        let transformed_response_headers = transform_response_headers(&upstream_headers, &route.transform.response);
 
         let mut response_builder = Response::builder().status(status);
-        for (name, value) in &upstream_headers {
+        for (name, value) in &transformed_response_headers {
             if !is_hop_by_hop_header(name.as_str()) {
                 response_builder = response_builder.header(name, value);
             }
         }
 
+        if let Some(replacement_body) = response_body_replace {
+            return response_builder
+                .body(Body::from(replacement_body))
+                .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to build response").into_response());
+        }
+
+        let response_stream = upstream_response.bytes_stream();
         return response_builder
             .body(Body::from_stream(response_stream))
             .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "failed to build response").into_response());
@@ -430,6 +460,141 @@ fn pick_target(
         request_count,
     )
     .cloned()
+}
+
+fn select_upstream_name(route: &Route, headers: &HeaderMap, client_key: &str, request_count: usize) -> String {
+    let split = &route.traffic_split;
+    let Some(canary_upstream) = split.canary_upstream.as_ref() else {
+        return route.upstream.clone();
+    };
+
+    let force_canary = split
+        .canary_header
+        .as_ref()
+        .and_then(|hdr| headers.get(hdr.name.as_str()).and_then(|v| v.to_str().ok()).map(|v| v == hdr.value))
+        .unwrap_or(false);
+
+    if force_canary {
+        return canary_upstream.clone();
+    }
+
+    if split.canary_percentage == 0 {
+        return route.upstream.clone();
+    }
+
+    let bucket = stable_percentage_bucket(route.name.as_str(), client_key, request_count);
+    if bucket < split.canary_percentage as u64 {
+        canary_upstream.clone()
+    } else {
+        route.upstream.clone()
+    }
+}
+
+fn stable_percentage_bucket(route_name: &str, client_key: &str, request_count: usize) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    route_name.hash(&mut hasher);
+    client_key.hash(&mut hasher);
+    request_count.hash(&mut hasher);
+    hasher.finish() % 100
+}
+
+fn rewrite_path_and_query(route: &Route, path: &str, path_and_query: &str) -> Option<String> {
+    let replacement = route.transform.request.path_prefix_rewrite.as_ref()?;
+    if !path.starts_with(&route.path_prefix) {
+        return Some(path_and_query.to_string());
+    }
+
+    let suffix = &path_and_query[route.path_prefix.len()..];
+    Some(format!("{replacement}{suffix}"))
+}
+
+fn transform_request_headers(headers: &HeaderMap, transform: &RequestTransform) -> Vec<(HeaderName, HeaderValue)> {
+    let mut transformed = HeaderMap::new();
+    for (name, value) in forwardable_headers(headers) {
+        transformed.insert(name, value);
+    }
+
+    apply_header_transform(&mut transformed, &transform.add_headers, &transform.set_headers, &transform.remove_headers);
+    transformed.into_iter().filter_map(|(name, value)| name.map(|n| (n, value))).collect()
+}
+
+fn transform_response_headers(headers: &HeaderMap, transform: &ResponseTransform) -> HeaderMap {
+    let mut transformed = HeaderMap::new();
+    for (name, value) in headers {
+        transformed.insert(name, value.clone());
+    }
+
+    apply_header_transform(&mut transformed, &transform.add_headers, &transform.set_headers, &transform.remove_headers);
+    transformed
+}
+
+fn apply_header_transform(
+    headers: &mut HeaderMap,
+    add_headers: &HashMap<String, String>,
+    set_headers: &HashMap<String, String>,
+    remove_headers: &[String],
+) {
+    for name in remove_headers {
+        headers.remove(name);
+    }
+
+    for (name, value) in add_headers {
+        if let (Ok(header_name), Ok(header_value)) =
+            (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(value))
+        {
+            if !headers.contains_key(&header_name) {
+                headers.append(header_name, header_value);
+            }
+        }
+    }
+
+    for (name, value) in set_headers {
+        if let (Ok(header_name), Ok(header_value)) =
+            (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(value))
+        {
+            headers.insert(header_name, header_value);
+        }
+    }
+}
+
+async fn maybe_apply_fault_injection(
+    fault: &FaultInjectionConfig,
+    client_key: &str,
+    request_count: usize,
+) -> Option<Response> {
+    if !fault.enabled {
+        return None;
+    }
+
+    let bucket = stable_percentage_bucket("fault", client_key, request_count);
+    if bucket >= fault.probability_percent as u64 {
+        return None;
+    }
+
+    let jitter = if fault.jitter_ms > 0 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        client_key.hash(&mut hasher);
+        request_count.hash(&mut hasher);
+        hasher.finish() as u64 % (fault.jitter_ms + 1)
+    } else {
+        0
+    };
+
+    let delay = fault.delay_ms.saturating_add(jitter);
+    if delay > 0 {
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+
+    if let Some(status) = fault.abort_status {
+        let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let body = fault
+            .abort_body
+            .clone()
+            .unwrap_or_else(|| "fault injection abort".to_string());
+        return Some((status, body).into_response());
+    }
+
+    None
 }
 
 async fn graceful_shutdown_signal(state: Arc<AppState>, shutdown_cfg: config::ShutdownConfig) {

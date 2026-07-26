@@ -338,6 +338,42 @@ impl GatewayConfig {
                     route.name, route.upstream
                 ));
             }
+
+            if let Some(canary_upstream) = route.traffic_split.canary_upstream.as_deref() {
+                if !self
+                    .upstreams
+                    .iter()
+                    .any(|upstream| upstream.name == canary_upstream)
+                {
+                    return Err(format!(
+                        "route '{}' references unknown canary upstream '{}'",
+                        route.name, canary_upstream
+                    ));
+                }
+            }
+
+            if route.traffic_split.canary_percentage > 100 {
+                return Err(format!(
+                    "route '{}' has invalid canary percentage {}; must be <= 100",
+                    route.name, route.traffic_split.canary_percentage
+                ));
+            }
+
+            if route.fault_injection.probability_percent > 100 {
+                return Err(format!(
+                    "route '{}' has invalid fault injection probability {}; must be <= 100",
+                    route.name, route.fault_injection.probability_percent
+                ));
+            }
+
+            if let Some(status) = route.fault_injection.abort_status {
+                if !(100..=599).contains(&status) {
+                    return Err(format!(
+                        "route '{}' has invalid fault injection abort_status {}; must be in 100..=599",
+                        route.name, status
+                    ));
+                }
+            }
         }
 
         for upstream in &self.upstreams {
@@ -363,6 +399,9 @@ mod tests {
                 path_prefix: "/".to_string(),
                 upstream: "missing".to_string(),
                 protocols: vec![],
+                transform: Default::default(),
+                traffic_split: Default::default(),
+                fault_injection: Default::default(),
             }],
             upstreams: vec![],
             security: crate::security::SecurityConfig::default(),
