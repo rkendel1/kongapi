@@ -39,6 +39,8 @@ pub struct JwtConfig {
     pub secret: String,
     #[serde(default = "default_roles_claim")]
     pub roles_claim: String,
+    #[serde(default = "default_groups_claim")]
+    pub groups_claim: String,
 }
 
 fn default_roles_claim() -> String {
@@ -147,7 +149,25 @@ impl SecurityConfig {
             });
         }
 
-        let mode = self.enabled_modes[0].clone();
+        let mut errors = Vec::with_capacity(self.enabled_modes.len());
+        for mode in &self.enabled_modes {
+            match self.authenticate_mode(mode, headers) {
+                Ok(identity) => return Ok(identity),
+                Err(err) => errors.push(format!("{mode:?}: {err}")),
+            }
+        }
+
+        Err(format!(
+            "authentication failed for all enabled modes: {}",
+            errors.join(" | ")
+        ))
+    }
+
+    fn authenticate_mode(
+        &self,
+        mode: &AuthMode,
+        headers: &HeaderMap,
+    ) -> Result<AuthenticatedIdentity, String> {
         match mode {
             AuthMode::Jwt => {
                 let claims = decode_token_claims(
@@ -158,9 +178,9 @@ impl SecurityConfig {
                     "invalid jwt",
                 )?;
                 Ok(AuthenticatedIdentity {
-                    mode,
+                    mode: mode.clone(),
                     roles: extract_claim_values(&claims, &self.jwt.roles_claim, true),
-                    groups: extract_claim_values(&claims, &default_groups_claim(), false),
+                    groups: extract_claim_values(&claims, &self.jwt.groups_claim, false),
                     subject: None,
                 })
             }
@@ -173,7 +193,7 @@ impl SecurityConfig {
                     "invalid oauth2 token",
                 )?;
                 Ok(AuthenticatedIdentity {
-                    mode,
+                    mode: mode.clone(),
                     roles: extract_claim_values(&claims, &self.oauth2.roles_claim, false),
                     groups: extract_claim_values(&claims, &self.oauth2.groups_claim, false),
                     subject: None,
@@ -188,7 +208,7 @@ impl SecurityConfig {
                     "invalid openid connect token",
                 )?;
                 Ok(AuthenticatedIdentity {
-                    mode,
+                    mode: mode.clone(),
                     roles: extract_claim_values(&claims, &self.openid_connect.roles_claim, false),
                     groups: extract_claim_values(&claims, &self.openid_connect.groups_claim, false),
                     subject: None,
@@ -210,7 +230,7 @@ impl SecurityConfig {
                 }
 
                 Ok(AuthenticatedIdentity {
-                    mode,
+                    mode: mode.clone(),
                     roles: extract_header_values(headers, &self.mtls.roles_header),
                     groups: extract_header_values(headers, &self.mtls.groups_header),
                     subject: Some(subject),
@@ -313,9 +333,13 @@ fn extract_claim_values(claims: &serde_json::Value, claim_name: &str, include_le
     let mut values = vec![];
     if let Some(value) = claims.get(claim_name) {
         if let Some(arr) = value.as_array() {
-            values.extend(arr.iter().filter_map(|item| item.as_str().map(ToOwned::to_owned)));
+            for item in arr {
+                if let Some(item) = item.as_str() {
+                    values.extend(split_identity_values(item));
+                }
+            }
         } else if let Some(single) = value.as_str() {
-            values.extend(single.split_whitespace().map(ToOwned::to_owned));
+            values.extend(split_identity_values(single));
         }
     }
 
@@ -333,15 +357,18 @@ fn extract_header_values(headers: &HeaderMap, header_name: &str) -> Vec<String> 
         .get(header_name)
         .and_then(|value| value.to_str().ok())
         .map(|value| {
-            value
-                .split(',')
-                .flat_map(str::split_whitespace)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .collect()
+            split_identity_values(value)
         })
         .unwrap_or_default()
+}
+
+fn split_identity_values(value: &str) -> Vec<String> {
+    value
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 #[cfg(test)]
@@ -432,6 +459,7 @@ mod tests {
             jwt: super::JwtConfig {
                 secret: "secret".to_string(),
                 roles_claim: "roles".to_string(),
+                groups_claim: "groups".to_string(),
             },
             oauth2: Default::default(),
             openid_connect: Default::default(),
@@ -623,5 +651,50 @@ mod tests {
         };
 
         assert!(cfg.authorize(&auth));
+    }
+
+    #[test]
+    fn falls_back_to_later_enabled_auth_mode() {
+        let token = encode(
+            &Header::default(),
+            &serde_json::json!({
+                "scope": "read",
+                "exp": (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system time should be valid")
+                    .as_secs()
+                    + 3600) as usize
+            }),
+            &EncodingKey::from_secret(b"oauth-secret"),
+        )
+        .expect("token generation should succeed");
+
+        let cfg = SecurityConfig {
+            enabled_modes: vec![AuthMode::Jwt, AuthMode::OAuth2],
+            rbac: vec![],
+            group_rbac: vec![],
+            jwt: super::JwtConfig {
+                secret: "".to_string(),
+                roles_claim: "roles".to_string(),
+                groups_claim: "groups".to_string(),
+            },
+            oauth2: OAuth2Config {
+                secret: "oauth-secret".to_string(),
+                issuer: "".to_string(),
+                audience: "".to_string(),
+                roles_claim: "scope".to_string(),
+                groups_claim: "groups".to_string(),
+            },
+            openid_connect: Default::default(),
+            mtls: Default::default(),
+            subject_rbac: vec![],
+        };
+
+        let auth_header = ["Bearer ", &token].concat();
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", auth_header.parse().expect("header value should parse"));
+        let identity = cfg.authenticate(&headers).expect("oauth2 fallback auth should succeed");
+        assert_eq!(identity.mode, AuthMode::OAuth2);
+        assert_eq!(identity.roles, vec!["read"]);
     }
 }

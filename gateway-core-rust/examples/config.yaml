@@ -51,6 +51,7 @@ security:
   jwt:
     secret: replace-with-real-secret
     roles_claim: roles
+    groups_claim: groups
   mtls:
     subject_header: x-client-cert-subject
     roles_header: x-client-cert-roles
