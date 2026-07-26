@@ -391,7 +391,12 @@ async fn proxy_handler(
 fn request_protocol(version: Version, headers: &HeaderMap) -> Protocol {
     if version == Version::HTTP_2 {
         if let Some(content_type) = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
-            let media_type = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+            let media_type = content_type
+                .split_once(';')
+                .map(|(media_type, _)| media_type)
+                .unwrap_or(content_type)
+                .trim()
+                .to_ascii_lowercase();
             if media_type == "application/grpc" || media_type.starts_with("application/grpc+") {
                 return Protocol::Grpc;
             }
@@ -490,5 +495,36 @@ mod tests {
     fn keeps_http2_protocol_without_grpc_content_type() {
         let headers = HeaderMap::new();
         assert_eq!(request_protocol(Version::HTTP_2, &headers), Protocol::Http2);
+    }
+
+    #[test]
+    fn detects_grpc_protocol_from_base_media_type() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
+        assert_eq!(request_protocol(Version::HTTP_2, &headers), Protocol::Grpc);
+    }
+
+    #[test]
+    fn keeps_http1_protocol_even_with_grpc_content_type() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
+        assert_eq!(request_protocol(Version::HTTP_11, &headers), Protocol::Http1);
+    }
+
+    #[test]
+    fn detects_grpc_protocol_with_content_type_parameters() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/grpc; charset=utf-8"),
+        );
+        assert_eq!(request_protocol(Version::HTTP_2, &headers), Protocol::Grpc);
+    }
+
+    #[test]
+    fn detects_grpc_protocol_case_insensitively() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("Application/GRPC"));
+        assert_eq!(request_protocol(Version::HTTP_2, &headers), Protocol::Grpc);
     }
 }
