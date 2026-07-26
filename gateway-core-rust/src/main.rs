@@ -34,7 +34,7 @@ use plugin::{PluginContext, PluginManager};
 use rate_limit::RateLimiter;
 use resilience::{should_retry_method, should_retry_status, target_key, RuntimeRegistry};
 use router::Protocol;
-use security::{AuthContext, AuthMode};
+use security::AuthContext;
 
 #[derive(Clone)]
 struct AppState {
@@ -250,8 +250,8 @@ async fn proxy_handler(
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
 
-    let roles = match state.config.security.authenticate_jwt(auth_header) {
-        Ok(roles) => roles,
+    let identity = match state.config.security.authenticate(auth_header) {
+        Ok(identity) => identity,
         Err(err) => {
             state.metrics.inc_unauthorized();
             tracing::warn!(error = %err, route = %route.name, "authentication failed");
@@ -260,8 +260,9 @@ async fn proxy_handler(
     };
 
     let auth_ctx = AuthContext {
-        mode: AuthMode::Jwt,
-        roles: &roles,
+        mode: identity.mode,
+        roles: &identity.roles,
+        groups: &identity.groups,
         route_name: &route.name,
     };
 

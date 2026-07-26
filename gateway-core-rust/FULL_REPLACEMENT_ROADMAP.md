@@ -32,6 +32,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add compatibility test suite against representative Kong route cases.
 
 ## PR4 — Security parity expansion
+- Status: in progress (initial OAuth2/OIDC bearer-token verification and group RBAC support implemented).
 - Add OAuth2 and OpenID Connect verification flows.
 - Add mTLS identity extraction and policy enforcement.
 - Add ACL/group authorization model parity with Kong behavior.
