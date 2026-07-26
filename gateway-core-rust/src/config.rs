@@ -30,16 +30,23 @@ pub struct GatewayConfig {
 pub struct ServerConfig {
     #[serde(default = "default_listen_addr")]
     pub listen_addr: String,
+    #[serde(default = "default_max_request_body_bytes")]
+    pub max_request_body_bytes: usize,
 }
 
 fn default_listen_addr() -> String {
     "127.0.0.1:3000".to_string()
 }
 
+fn default_max_request_body_bytes() -> usize {
+    8 * 1024 * 1024
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: default_listen_addr(),
+            max_request_body_bytes: default_max_request_body_bytes(),
         }
     }
 }

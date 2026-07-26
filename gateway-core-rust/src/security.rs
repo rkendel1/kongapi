@@ -176,7 +176,7 @@ mod tests {
             },
         };
 
-        let auth_header = ["Bea", "rer ", &token].concat();
+        let auth_header = ["Bearer ", &token].concat();
         let roles = cfg
             .authenticate_jwt(Some(&auth_header))
             .expect("jwt auth should succeed");

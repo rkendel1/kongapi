@@ -61,7 +61,13 @@ impl RateLimiter {
         }
 
         let now = Instant::now();
-        let mut buckets = self.buckets.lock().expect("lock should not be poisoned");
+        let mut buckets = match self.buckets.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::error!("rate limiter lock poisoned; recovering with inner state");
+                poisoned.into_inner()
+            }
+        };
         let bucket = buckets.entry(key.to_string()).or_insert_with(|| TokenBucket {
             tokens: self.config.capacity as f64,
             last_refill: now,

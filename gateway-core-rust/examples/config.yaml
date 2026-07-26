@@ -1,5 +1,6 @@
 server:
   listen_addr: 127.0.0.1:3000
+  max_request_body_bytes: 8388608
 
 routes:
   - name: users-v1

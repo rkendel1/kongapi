@@ -63,7 +63,6 @@ async fn main() {
         limiter: Arc::new(RateLimiter::new(config.rate_limit.clone())),
         plugins: Arc::new(plugin_manager),
         client: reqwest::Client::builder()
-            .danger_accept_invalid_certs(false)
             .build()
             .expect("reqwest client creation should succeed"),
         request_counter: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -203,7 +202,7 @@ async fn proxy_handler(
 
     let upstream_url = format!("http://{}{}", target.address, path_and_query);
 
-    let body_bytes = match to_bytes(body, 8 * 1024 * 1024).await {
+    let body_bytes = match to_bytes(body, state.config.server.max_request_body_bytes).await {
         Ok(bytes) => bytes,
         Err(_) => {
             state.metrics.inc_error();
