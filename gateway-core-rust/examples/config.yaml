@@ -11,6 +11,7 @@ server:
       max_attempts: 3
       backoff_ms: 50
       idempotent_only: true
+      retry_unsafe_methods: false
   shutdown:
     drain_timeout_ms: 10000
     drain_poll_ms: 50

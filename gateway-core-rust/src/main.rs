@@ -300,7 +300,7 @@ async fn proxy_handler(
     let forwarded_headers = forwardable_headers(&headers);
     let overall_timeout = Duration::from_millis(state.config.server.proxy.request_timeout_ms);
     let retry_cfg = &state.config.server.proxy.retries;
-    let max_attempts = if should_retry_method(&method, retry_cfg.idempotent_only) {
+    let max_attempts = if should_retry_method(&method, retry_cfg.idempotent_only, retry_cfg.retry_unsafe_methods) {
         retry_cfg.max_attempts.max(1)
     } else {
         1
@@ -308,8 +308,11 @@ async fn proxy_handler(
 
     let body_bytes = match to_bytes(body, state.config.server.max_request_body_bytes).await {
         Ok(bytes) => bytes,
-        Err(_) => {
+        Err(err) => {
             state.metrics.inc_error();
+            if err.to_string().contains("length limit exceeded") {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "request body too large").into_response();
+            }
             return (StatusCode::BAD_REQUEST, "failed to read request body").into_response();
         }
     };
@@ -323,7 +326,7 @@ async fn proxy_handler(
         }
 
         let request_count = state.request_counter.fetch_add(1, Ordering::Relaxed);
-        let Some(target) = pick_target(upstream, runtime_registry, &client_key, request_count + attempt as usize) else {
+        let Some(target) = pick_target(upstream, runtime_registry, &client_key, request_count) else {
             state.metrics.inc_error();
             return (StatusCode::BAD_GATEWAY, "no healthy upstream target available").into_response();
         };

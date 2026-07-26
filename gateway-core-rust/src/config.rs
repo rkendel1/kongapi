@@ -42,8 +42,10 @@ fn default_listen_addr() -> String {
     "127.0.0.1:3000".to_string()
 }
 
+const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 fn default_max_request_body_bytes() -> usize {
-    8 * 1024 * 1024
+    DEFAULT_MAX_REQUEST_BODY_BYTES
 }
 
 impl Default for ServerConfig {
@@ -114,6 +116,8 @@ pub struct RetryConfig {
     pub backoff_ms: u64,
     #[serde(default = "default_retry_idempotent_only")]
     pub idempotent_only: bool,
+    #[serde(default)]
+    pub retry_unsafe_methods: bool,
 }
 
 fn default_retry_max_attempts() -> u8 {
@@ -134,6 +138,7 @@ impl Default for RetryConfig {
             max_attempts: default_retry_max_attempts(),
             backoff_ms: default_retry_backoff_ms(),
             idempotent_only: default_retry_idempotent_only(),
+            retry_unsafe_methods: false,
         }
     }
 }

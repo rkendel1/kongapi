@@ -136,20 +136,15 @@ pub fn target_key(upstream: &str, target_id: &str) -> String {
     format!("{upstream}:{target_id}")
 }
 
-pub fn should_retry_method(method: &http::Method, idempotent_only: bool) -> bool {
+pub fn should_retry_method(method: &http::Method, idempotent_only: bool, retry_unsafe_methods: bool) -> bool {
     if !idempotent_only {
         return true;
     }
 
     matches!(
         *method,
-        http::Method::GET
-            | http::Method::HEAD
-            | http::Method::OPTIONS
-            | http::Method::TRACE
-            | http::Method::PUT
-            | http::Method::DELETE
-    )
+        http::Method::GET | http::Method::HEAD | http::Method::OPTIONS | http::Method::TRACE
+    ) || (retry_unsafe_methods && matches!(*method, http::Method::PUT | http::Method::DELETE))
 }
 
 pub fn should_retry_status(status: reqwest::StatusCode) -> bool {
@@ -169,9 +164,11 @@ mod tests {
 
     #[test]
     fn retry_policy_is_idempotent_aware() {
-        assert!(should_retry_method(&http::Method::GET, true));
-        assert!(!should_retry_method(&http::Method::POST, true));
-        assert!(should_retry_method(&http::Method::POST, false));
+        assert!(should_retry_method(&http::Method::GET, true, false));
+        assert!(!should_retry_method(&http::Method::PUT, true, false));
+        assert!(should_retry_method(&http::Method::PUT, true, true));
+        assert!(!should_retry_method(&http::Method::POST, true, false));
+        assert!(should_retry_method(&http::Method::POST, false, false));
     }
 
     #[test]
