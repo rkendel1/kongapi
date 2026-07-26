@@ -21,6 +21,27 @@ routes:
     path_prefix: /api/v1/users
     upstream: users-service
     protocols: [http1, http2]
+    transform:
+      request:
+        path_prefix_rewrite: /users
+        set_headers:
+          x-gateway-route: users-v1
+      response:
+        add_headers:
+          x-gateway-slice: gateway-core-rust
+    traffic_split:
+      canary_upstream: users-service-canary
+      canary_percentage: 20
+      canary_header:
+        name: x-canary
+        value: "1"
+    fault_injection:
+      enabled: false
+      probability_percent: 5
+      delay_ms: 100
+      jitter_ms: 50
+      abort_status: 503
+      abort_body: synthetic fault response
 
 upstreams:
   - name: users-service
@@ -43,24 +64,69 @@ upstreams:
     targets:
       - id: users-1
         address: 127.0.0.1:9001
+        weight: 3
       - id: users-2
         address: 127.0.0.1:9002
+        weight: 1
+  - name: users-service-canary
+    strategy: round-robin
+    health_checks:
+      active:
+        enabled: false
+      passive:
+        failure_threshold: 2
+        success_threshold: 1
+    circuit_breaker:
+      failure_threshold: 3
+      open_ms: 3000
+      half_open_max_requests: 1
+    targets:
+      - id: users-canary-1
+        address: 127.0.0.1:9101
+        weight: 1
 
 security:
   enabled_modes: [jwt]
   jwt:
     secret: replace-with-real-secret
     roles_claim: roles
+    groups_claim: groups
+  mtls:
+    subject_header: x-client-cert-subject
+    roles_header: x-client-cert-roles
+    groups_header: x-client-cert-groups
+    allowed_subjects: []
   rbac:
     - role: admin
       route: users-v1
+  subject_rbac: []
 
 rate_limit:
   enabled: true
+  policy: sliding_window
   capacity: 100
   refill_per_second: 100
+  fixed_window_seconds: 60
+  sliding_window_seconds: 60
+  scoped_limits:
+    - scope: route
+      limit: 500
+      window_seconds: 60
+      policy: fixed_window
+    - scope: service
+      limit: 1000
+      window_seconds: 60
+      policy: sliding_window
+    - scope: consumer
+      limit: 120
+      window_seconds: 60
+      quota: 10000
 
 plugins:
   - name: jwt_auth
     module: plugins.jwt_auth
+    runtime: wasm
+    contract_version: 1
+    phases: [access, log]
+    capabilities: [read_headers, emit_logs]
     wasm_path: examples/plugins/jwt_auth/jwt_auth.wasm

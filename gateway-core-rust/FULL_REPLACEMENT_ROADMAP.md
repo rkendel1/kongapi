@@ -13,7 +13,7 @@ This roadmap defines an incremental path from the current Rust first slice to fe
   - plugin lifecycle scaffolding and declared Wasm plugin contract surface
   - baseline metrics/tracing endpoints
 
-## PR2 — Production proxy/runtime hardening
+## PR2 (completed) — Production proxy/runtime hardening
 - Add connection pooling and upstream keep-alive policy tuning.
 - Add request/response streaming proxy mode (avoid full-body buffering).
 - Add retries with bounded policy and idempotency checks.
@@ -23,14 +23,14 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add graceful shutdown and draining for in-flight requests.
 - Add conformance/perf tests for concurrent load and backpressure.
 
-## PR3 — Full protocol parity layer
+## PR3 (completed) — Full protocol parity layer
 - Complete HTTP/2 and gRPC routing semantics parity.
 - Add TLS termination and upstream TLS/mTLS support.
 - Add SNI/certificate selection and rotation hooks.
 - Add L4 proxy mode planning and L7/L4 boundary interfaces.
 - Add compatibility test suite against representative Kong route cases.
 
-## PR4 — Security parity expansion
+## PR4 (completed) — Security parity expansion
 - Add OAuth2 and OpenID Connect verification flows.
 - Add mTLS identity extraction and policy enforcement.
 - Add ACL/group authorization model parity with Kong behavior.
@@ -38,14 +38,14 @@ This roadmap defines an incremental path from the current Rust first slice to fe
 - Add key/cert hot reload and secret rotation handling.
 - Add security-focused integration tests and threat-model checks.
 
-## PR5 — Traffic controls parity
+## PR5 (completed) — Traffic controls parity
 - Add sliding window and fixed window policies in addition to token bucket.
 - Add route/service/consumer-scoped limits and quotas.
 - Add request/response transformations (headers/body/path rewrite).
 - Add canary and weighted traffic splitting primitives.
 - Add advanced fault-injection controls for resilience testing.
 
-## PR6 — Plugin runtime parity (native + Wasm)
+## PR6 (completed) — Plugin runtime parity (native + Wasm)
 - Finalize stable Rust plugin trait contracts with versioning.
 - Implement Wasm runtime host with sandboxed capability model.
 - Add plugin phase ordering parity (init/access/header/body/log).
