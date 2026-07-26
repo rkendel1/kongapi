@@ -1,0 +1,66 @@
+server:
+  listen_addr: 127.0.0.1:3000
+  max_request_body_bytes: 8388608
+  proxy:
+    connect_timeout_ms: 1000
+    read_timeout_ms: 5000
+    request_timeout_ms: 7000
+    max_idle_per_host: 64
+    idle_timeout_secs: 90
+    retries:
+      max_attempts: 3
+      backoff_ms: 50
+      idempotent_only: true
+      retry_unsafe_methods: false
+  shutdown:
+    drain_timeout_ms: 10000
+    drain_poll_ms: 50
+
+routes:
+  - name: users-v1
+    path_prefix: /api/v1/users
+    upstream: users-service
+    protocols: [http1, http2]
+
+upstreams:
+  - name: users-service
+    strategy: round-robin
+    health_checks:
+      active:
+        enabled: false
+        path: /healthz
+        interval_ms: 5000
+        timeout_ms: 1000
+        healthy_threshold: 2
+        unhealthy_threshold: 2
+      passive:
+        failure_threshold: 3
+        success_threshold: 1
+    circuit_breaker:
+      failure_threshold: 5
+      open_ms: 5000
+      half_open_max_requests: 1
+    targets:
+      - id: users-1
+        address: 127.0.0.1:9001
+      - id: users-2
+        address: 127.0.0.1:9002
+
+security:
+  enabled_modes: [jwt]
+  jwt:
+    secret: replace-with-real-secret
+    roles_claim: roles
+  rbac:
+    - role: admin
+      route: users-v1
+
+rate_limit:
+  enabled: true
+  capacity: 100
+  refill_per_second: 100
+
+plugins:
+  - name: jwt_auth
+    module: plugins.jwt_auth
+    wasm_path: examples/plugins/jwt_auth/jwt_auth.wasm
