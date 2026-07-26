@@ -7,6 +7,7 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
+    Anonymous,
     Jwt,
     OAuth2,
     OpenIdConnect,
@@ -142,7 +143,7 @@ impl SecurityConfig {
     pub fn authenticate(&self, headers: &HeaderMap) -> Result<AuthenticatedIdentity, String> {
         if self.enabled_modes.is_empty() {
             return Ok(AuthenticatedIdentity {
-                mode: AuthMode::Jwt,
+                mode: AuthMode::Anonymous,
                 roles: vec![],
                 groups: vec![],
                 subject: None,
@@ -169,6 +170,12 @@ impl SecurityConfig {
         headers: &HeaderMap,
     ) -> Result<AuthenticatedIdentity, String> {
         match mode {
+            AuthMode::Anonymous => Ok(AuthenticatedIdentity {
+                mode: AuthMode::Anonymous,
+                roles: vec![],
+                groups: vec![],
+                subject: None,
+            }),
             AuthMode::Jwt => {
                 let claims = decode_token_claims(
                     headers,
@@ -335,11 +342,11 @@ fn extract_claim_values(claims: &serde_json::Value, claim_name: &str, include_le
         if let Some(arr) = value.as_array() {
             for item in arr {
                 if let Some(item) = item.as_str() {
-                    values.extend(split_identity_values(item));
+                    values.extend(split_claim_values(item));
                 }
             }
         } else if let Some(single) = value.as_str() {
-            values.extend(split_identity_values(single));
+            values.extend(split_claim_values(single));
         }
     }
 
@@ -357,14 +364,23 @@ fn extract_header_values(headers: &HeaderMap, header_name: &str) -> Vec<String> 
         .get(header_name)
         .and_then(|value| value.to_str().ok())
         .map(|value| {
-            split_identity_values(value)
+            split_header_values(value)
         })
         .unwrap_or_default()
 }
 
-fn split_identity_values(value: &str) -> Vec<String> {
+fn split_claim_values(value: &str) -> Vec<String> {
     value
-        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn split_header_values(value: &str) -> Vec<String> {
+    value
+        .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
@@ -621,7 +637,7 @@ mod tests {
         assert_eq!(identity.mode, AuthMode::Mtls);
         assert_eq!(identity.subject.as_deref(), Some("CN=svc-a"));
         assert_eq!(identity.roles, vec!["admin", "writer"]);
-        assert_eq!(identity.groups, vec!["platform", "ops"]);
+        assert_eq!(identity.groups, vec!["platform ops"]);
     }
 
     #[test]
