@@ -1,6 +1,7 @@
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -46,15 +47,6 @@ pub struct AuthContext<'a> {
     pub route_name: &'a str,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct JwtClaims {
-    #[serde(default)]
-    roles: Vec<String>,
-    #[serde(default)]
-    role: Option<String>,
-    exp: usize,
-}
-
 impl SecurityConfig {
     pub fn authenticate_jwt(&self, auth_header: Option<&str>) -> Result<Vec<String>, String> {
         if !self.enabled_modes.contains(&AuthMode::Jwt) {
@@ -69,7 +61,7 @@ impl SecurityConfig {
             .and_then(|header| header.strip_prefix("Bearer "))
             .ok_or_else(|| "missing bearer token".to_string())?;
 
-        let claims = decode::<JwtClaims>(
+        let claims = decode::<serde_json::Value>(
             bearer,
             &DecodingKey::from_secret(self.jwt.secret.as_bytes()),
             &Validation::new(Algorithm::HS256),
@@ -77,9 +69,17 @@ impl SecurityConfig {
         .map_err(|err| format!("invalid jwt: {err}"))?
         .claims;
 
-        let mut roles = claims.roles;
-        if let Some(role) = claims.role {
-            roles.push(role);
+        let mut roles = vec![];
+        if let Some(value) = claims.get(&self.jwt.roles_claim) {
+            if let Some(arr) = value.as_array() {
+                roles.extend(arr.iter().filter_map(|item| item.as_str().map(ToOwned::to_owned)));
+            } else if let Some(single) = value.as_str() {
+                roles.push(single.to_string());
+            }
+        }
+
+        if let Some(single_role) = claims.get("role").and_then(|v| v.as_str()) {
+            roles.push(single_role.to_string());
         }
 
         Ok(roles)
@@ -90,7 +90,7 @@ impl SecurityConfig {
             return false;
         }
 
-        let required_roles: Vec<&str> = self
+        let required_roles: HashSet<&str> = self
             .rbac
             .iter()
             .filter(|binding| binding.route == auth.route_name)
@@ -101,7 +101,7 @@ impl SecurityConfig {
             || auth
                 .roles
                 .iter()
-                .any(|role| required_roles.iter().any(|required| role == required))
+                .any(|role| required_roles.contains(role.as_str()))
     }
 }
 
@@ -109,7 +109,7 @@ impl SecurityConfig {
 mod tests {
     use jsonwebtoken::{encode, EncodingKey, Header};
 
-    use super::{AuthContext, AuthMode, JwtClaims, RoleBinding, SecurityConfig};
+    use super::{AuthContext, AuthMode, RoleBinding, SecurityConfig};
 
     #[test]
     fn denies_disabled_auth_mode() {
@@ -154,15 +154,14 @@ mod tests {
     fn authenticates_valid_jwt() {
         let token = encode(
             &Header::default(),
-            &JwtClaims {
-                roles: vec!["admin".to_string()],
-                role: None,
-                exp: (std::time::SystemTime::now()
+            &serde_json::json!({
+                "roles": ["admin"],
+                "exp": (std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .expect("system time should be valid")
                     .as_secs()
-                    + 3600) as usize,
-            },
+                    + 3600) as usize
+            }),
             &EncodingKey::from_secret(b"secret"),
         )
         .expect("token generation should succeed");

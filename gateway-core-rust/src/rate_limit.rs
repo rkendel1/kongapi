@@ -64,7 +64,7 @@ impl RateLimiter {
         let mut buckets = match self.buckets.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
-                tracing::error!("rate limiter lock poisoned; recovering with inner state");
+                tracing::error!("rate limiter lock poisoned; recovering state and continuing request processing");
                 poisoned.into_inner()
             }
         };

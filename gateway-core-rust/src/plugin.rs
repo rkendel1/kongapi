@@ -31,6 +31,7 @@ pub struct PluginManager {
 
 struct DeclaredPlugin {
     name: String,
+    module: String,
     wasm_path: Option<String>,
 }
 
@@ -41,7 +42,7 @@ impl GatewayPlugin for DeclaredPlugin {
 
     fn execute(&self, _ctx: &PluginContext) -> PluginResult {
         if let Some(wasm) = &self.wasm_path {
-            tracing::debug!(plugin = %self.name, wasm_path = %wasm, "declared wasm plugin executed as passthrough");
+            tracing::debug!(plugin = %self.name, module = %self.module, wasm_path = %wasm, "declared WASM plugin executed as passthrough");
         }
 
         PluginResult {
@@ -61,6 +62,7 @@ impl PluginManager {
         for cfg in configs {
             manager.register(Box::new(DeclaredPlugin {
                 name: cfg.name.clone(),
+                module: cfg.module.clone(),
                 wasm_path: cfg.wasm_path.clone(),
             }))?;
         }

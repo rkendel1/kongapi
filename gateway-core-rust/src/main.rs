@@ -212,7 +212,8 @@ async fn proxy_handler(
 
     let mut request_builder = state.client.request(method.clone(), upstream_url);
     for (name, value) in &headers {
-        if !is_hop_by_hop_header(name.as_str()) && name.as_str() != "host" {
+        let header_name = name.as_str();
+        if !is_hop_by_hop_header(header_name) && header_name != "host" {
             request_builder = request_builder.header(name, value);
         }
     }
